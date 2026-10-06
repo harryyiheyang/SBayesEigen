@@ -1,0 +1,38 @@
+Package: SBayesEigen
+Type: Package
+Title: Fast SBayes-Style Polygenic Risk Scores from Eigen-Decomposed LD
+Version: 0.1.0
+Authors@R: c(
+    person("Yihe", "Yang", email = "yxy1234@case.edu", role = c("aut", "cre"),
+           comment = c(ORCID = "0000-0001-6563-3579")),
+    person("Christopher", "Chang", role = c("ctb", "cph"), comment = "bundled pgenlib"))
+Description: Builds polygenic risk scores from GWAS summary statistics and
+    eigen-decomposed LD blocks in the SBayesRC layout (blockN.eigen.bin). The
+    LD reference is built directly from PLINK BED or PGEN genotypes with a
+    bit-plane correlation kernel and a partial eigendecomposition that forms
+    only the leading eigenvectors. Summary data are tidied and imputed in the
+    eigen space. The marginal effects are rotated into each block's eigenbasis,
+    where the likelihood is diagonal, and the effects receive a six-class
+    mixture prior (an exact zero plus variance ratios 1:10:100:1000:10000)
+    fitted by variational EM with SQUAREM acceleration. A built-in LD score
+    regression gives the heritability start value and a heavy-tailed prior on
+    the genetic variance. The core is C++ with OpenMP.
+License: GPL (>= 3)
+Encoding: UTF-8
+SystemRequirements: C++17, GNU make, OpenMP (optional)
+Depends:
+    R (>= 3.5.0)
+Imports:
+    data.table,
+    Rcpp (>= 1.0.0),
+    stats,
+    utils
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+LinkingTo:
+    Rcpp,
+    RcppEigen
+URL: https://github.com/harryyiheyang/SBayesEigen
+BugReports: https://github.com/harryyiheyang/SBayesEigen/issues
+RoxygenNote: 7.3.1
