@@ -12,8 +12,8 @@ Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 #endif
 
 // impute_blocks_eigen_cpp
-Rcpp::List impute_blocks_eigen_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcpp::List z, Rcpp::List n_typed, double n_missing, double thresh, int threads, bool return_w);
-RcppExport SEXP _SBayesEigen_impute_blocks_eigen_cpp(SEXP filesSEXP, SEXP typed_indexSEXP, SEXP zSEXP, SEXP n_typedSEXP, SEXP n_missingSEXP, SEXP threshSEXP, SEXP threadsSEXP, SEXP return_wSEXP) {
+Rcpp::List impute_blocks_eigen_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcpp::List z, Rcpp::List n_typed, Rcpp::NumericVector n_missing, double thresh, int threads, bool return_w, bool want_ld);
+RcppExport SEXP _SBayesEigen_impute_blocks_eigen_cpp(SEXP filesSEXP, SEXP typed_indexSEXP, SEXP zSEXP, SEXP n_typedSEXP, SEXP n_missingSEXP, SEXP threshSEXP, SEXP threadsSEXP, SEXP return_wSEXP, SEXP want_ldSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -21,11 +21,12 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< Rcpp::List >::type typed_index(typed_indexSEXP);
     Rcpp::traits::input_parameter< Rcpp::List >::type z(zSEXP);
     Rcpp::traits::input_parameter< Rcpp::List >::type n_typed(n_typedSEXP);
-    Rcpp::traits::input_parameter< double >::type n_missing(n_missingSEXP);
+    Rcpp::traits::input_parameter< Rcpp::NumericVector >::type n_missing(n_missingSEXP);
     Rcpp::traits::input_parameter< double >::type thresh(threshSEXP);
     Rcpp::traits::input_parameter< int >::type threads(threadsSEXP);
     Rcpp::traits::input_parameter< bool >::type return_w(return_wSEXP);
-    rcpp_result_gen = Rcpp::wrap(impute_blocks_eigen_cpp(files, typed_index, z, n_typed, n_missing, thresh, threads, return_w));
+    Rcpp::traits::input_parameter< bool >::type want_ld(want_ldSEXP);
+    rcpp_result_gen = Rcpp::wrap(impute_blocks_eigen_cpp(files, typed_index, z, n_typed, n_missing, thresh, threads, return_w, want_ld));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -62,20 +63,6 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< bool >::type want_strings(want_stringsSEXP);
     Rcpp::traits::input_parameter< int >::type threads(threadsSEXP);
     rcpp_result_gen = Rcpp::wrap(tidy_cpp(mafile, snpinfo, output, freq_thresh, N_sd_range, rate2pq, want_strings, threads));
-    return rcpp_result_gen;
-END_RCPP
-}
-// eig_w_cpp
-List eig_w_cpp(CharacterVector files, List bhat, double thresh, int threads);
-RcppExport SEXP _SBayesEigen_eig_w_cpp(SEXP filesSEXP, SEXP bhatSEXP, SEXP threshSEXP, SEXP threadsSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< CharacterVector >::type files(filesSEXP);
-    Rcpp::traits::input_parameter< List >::type bhat(bhatSEXP);
-    Rcpp::traits::input_parameter< double >::type thresh(threshSEXP);
-    Rcpp::traits::input_parameter< int >::type threads(threadsSEXP);
-    rcpp_result_gen = Rcpp::wrap(eig_w_cpp(files, bhat, thresh, threads));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -132,27 +119,14 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// eig_ldscore_cpp
-List eig_ldscore_cpp(CharacterVector files);
-RcppExport SEXP _SBayesEigen_eig_ldscore_cpp(SEXP filesSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< CharacterVector >::type files(filesSEXP);
-    rcpp_result_gen = Rcpp::wrap(eig_ldscore_cpp(files));
-    return rcpp_result_gen;
-END_RCPP
-}
 
 static const R_CallMethodDef CallEntries[] = {
-    {"_SBayesEigen_impute_blocks_eigen_cpp", (DL_FUNC) &_SBayesEigen_impute_blocks_eigen_cpp, 8},
+    {"_SBayesEigen_impute_blocks_eigen_cpp", (DL_FUNC) &_SBayesEigen_impute_blocks_eigen_cpp, 9},
     {"_SBayesEigen_ld_build_cpp", (DL_FUNC) &_SBayesEigen_ld_build_cpp, 8},
     {"_SBayesEigen_tidy_cpp", (DL_FUNC) &_SBayesEigen_tidy_cpp, 8},
-    {"_SBayesEigen_eig_w_cpp", (DL_FUNC) &_SBayesEigen_eig_w_cpp, 4},
     {"_SBayesEigen_eig_beta_cpp", (DL_FUNC) &_SBayesEigen_eig_beta_cpp, 4},
     {"_SBayesEigen_em_step_cpp", (DL_FUNC) &_SBayesEigen_em_step_cpp, 11},
     {"_SBayesEigen_post_cpp", (DL_FUNC) &_SBayesEigen_post_cpp, 8},
-    {"_SBayesEigen_eig_ldscore_cpp", (DL_FUNC) &_SBayesEigen_eig_ldscore_cpp, 1},
     {NULL, NULL, 0}
 };
 

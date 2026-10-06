@@ -127,29 +127,40 @@ static std::vector<float> impute_eigenspace(const EigenBlock& ld, const std::vec
 
 
 struct BlockResult {
-  std::vector<float> z_missing;
-  std::vector<double> w, lam;
-  int method = -1;   // 0 missing, 1 eigen, 2 typed, -1 nothing to impute
+  std::vector<std::vector<float>> z_missing;   // per trait
+  std::vector<std::vector<double>> w;          // per trait; empty when the trait has no typed SNP here
+  std::vector<double> lam, ld;
+  std::vector<int> method;                     // per trait: 0 missing, 1 eigen, 2 typed, -1 nothing to impute
   std::string error;
 };
 
-// typed_index: zero-based, strictly increasing per block; z, n_typed: per typed SNP
+// K traits, each block mapped once. typed_index[[t]][[b]]: zero-based, strictly increasing typed SNPs of
+// trait t in block b (empty: trait t skips the block); z, n_typed: per typed SNP; n_missing[t]: N used
+// for imputed SNPs. return_w: pass 1 per trait while U is in memory, bhat = z / sqrt(N + z^2) on every
+// SNP, w = Lambda^{-1/2} U' bhat. want_ld: eigen LD score sum_j U_ij^2 lambda_j^2 per SNP.
 // [[Rcpp::export]]
 Rcpp::List impute_blocks_eigen_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcpp::List z,
-                                   Rcpp::List n_typed, double n_missing, double thresh, int threads,
-                                   bool return_w) {
+                                   Rcpp::List n_typed, Rcpp::NumericVector n_missing, double thresh, int threads,
+                                   bool return_w, bool want_ld) {
   const float diag_mod = 0.1f;
-  const int nb = files.size();
+  const int nb = files.size(), K = typed_index.size();
   std::vector<std::string> fs(nb);
-  std::vector<std::vector<int>> typed(nb);
-  std::vector<std::vector<float>> zt(nb);
-  std::vector<std::vector<double>> nt(nb);
-  for (int b = 0; b < nb; ++b) {
-    fs[b] = Rcpp::as<std::string>(files[b]);
-    typed[b] = Rcpp::as<std::vector<int>>(typed_index[b]);
-    zt[b] = Rcpp::as<std::vector<float>>(z[b]);
-    if (return_w) nt[b] = Rcpp::as<std::vector<double>>(n_typed[b]);
+  for (int b = 0; b < nb; ++b) fs[b] = Rcpp::as<std::string>(files[b]);
+  std::vector<std::vector<std::vector<int>>> typed(K, std::vector<std::vector<int>>(nb));
+  std::vector<std::vector<std::vector<float>>> zt(K, std::vector<std::vector<float>>(nb));
+  std::vector<std::vector<std::vector<double>>> nt(K, std::vector<std::vector<double>>(nb));
+  for (int t = 0; t < K; ++t) {
+    Rcpp::List ti = typed_index[t], zi = z[t];
+    for (int b = 0; b < nb; ++b) {
+      typed[t][b] = Rcpp::as<std::vector<int>>(ti[b]);
+      zt[t][b] = Rcpp::as<std::vector<float>>(zi[b]);
+    }
+    if (return_w) {
+      Rcpp::List ni = n_typed[t];
+      for (int b = 0; b < nb; ++b) nt[t][b] = Rcpp::as<std::vector<double>>(ni[b]);
+    }
   }
+  std::vector<double> nmiss(n_missing.begin(), n_missing.end());
   std::vector<BlockResult> res(nb);
   Eigen::setNbThreads(1);
 #ifdef _OPENMP
@@ -157,35 +168,45 @@ Rcpp::List impute_blocks_eigen_cpp(Rcpp::CharacterVector files, Rcpp::List typed
 #endif
   for (int b = 0; b < nb; ++b) {
     BlockResult& r = res[b];
+    r.z_missing.resize(K); r.w.resize(K); r.method.assign(K, -1);
     try {
       EigFile f;
       if (!f.open(fs[b], thresh)) throw std::runtime_error("cannot read " + fs[b]);
       const EigenBlock ld(f);
-      const std::vector<int> missing = missing_indices(ld.m, typed[b]);
-      if (!missing.empty()) {
-        const int nt_ = static_cast<int>(typed[b].size()), nm = static_cast<int>(missing.size());
-        const std::string meth = solver_method(nt_, nm, ld.k);
-        r.method = meth == "missing" ? 0 : (meth == "eigen" ? 1 : 2);
-      }
-      r.z_missing = impute_eigenspace(ld, typed[b], zt[b], diag_mod);
-      if (return_w) {
-        std::vector<double> bh(ld.m);
-        for (size_t i = 0; i < typed[b].size(); ++i) {
-          const double zz = zt[b][i];
-          bh[typed[b][i]] = zz / std::sqrt(nt[b][i] + zz * zz);
+      std::vector<std::vector<double>> bh(K);
+      for (int t = 0; t < K; ++t) {
+        if (typed[t][b].empty()) continue;
+        const std::vector<int> missing = missing_indices(ld.m, typed[t][b]);
+        if (!missing.empty()) {
+          const std::string meth = solver_method(static_cast<int>(typed[t][b].size()), static_cast<int>(missing.size()), ld.k);
+          r.method[t] = meth == "missing" ? 0 : (meth == "eigen" ? 1 : 2);
+        }
+        r.z_missing[t] = impute_eigenspace(ld, typed[t][b], zt[t][b], diag_mod);
+        if (!return_w) continue;
+        bh[t].resize(ld.m);
+        for (size_t i = 0; i < typed[t][b].size(); ++i) {
+          const double zz = zt[t][b][i];
+          bh[t][typed[t][b][i]] = zz / std::sqrt(nt[t][b][i] + zz * zz);
         }
         for (size_t i = 0; i < missing.size(); ++i) {
-          const double zz = r.z_missing[i];
-          bh[missing[i]] = zz / std::sqrt(n_missing + zz * zz);
+          const double zz = r.z_missing[t][i];
+          bh[t][missing[i]] = zz / std::sqrt(nmiss[t] + zz * zz);
         }
-        r.w.resize(ld.k);
-        r.lam.resize(ld.k);
-        for (int j = 0; j < ld.k; ++j) {
+        r.w[t].resize(ld.k);
+      }
+      if (return_w || want_ld) {
+        r.lam.assign(f.lam, f.lam + ld.k);
+        if (want_ld) r.ld.assign(ld.m, 0.0);
+        for (int j = 0; j < ld.k; ++j) {   // one sweep over U for all traits
           const float* u = f.U + static_cast<size_t>(j) * ld.m;
-          double s = 0;
-          for (int i = 0; i < ld.m; ++i) s += u[i] * bh[i];
-          r.lam[j] = f.lam[j];
-          r.w[j] = s / std::sqrt(static_cast<double>(f.lam[j]));
+          const double isl = 1.0 / std::sqrt(static_cast<double>(f.lam[j])), l2 = static_cast<double>(f.lam[j]) * f.lam[j];
+          for (int t = 0; t < K; ++t) {
+            if (bh[t].empty()) continue;
+            double s = 0;
+            for (int i = 0; i < ld.m; ++i) s += u[i] * bh[t][i];
+            r.w[t][j] = s * isl;
+          }
+          if (want_ld) for (int i = 0; i < ld.m; ++i) r.ld[i] += static_cast<double>(u[i]) * u[i] * l2;
         }
       }
     } catch (const std::exception& e) {
@@ -195,13 +216,17 @@ Rcpp::List impute_blocks_eigen_cpp(Rcpp::CharacterVector files, Rcpp::List typed
     }
   }
   Rcpp::List out(nb);
-  Rcpp::IntegerVector method(nb);
+  Rcpp::IntegerMatrix method(nb, K);
   for (int b = 0; b < nb; ++b) {
     if (!res[b].error.empty()) Rcpp::stop(fs[b] + ": " + res[b].error);
-    method[b] = res[b].method;
-    out[b] = return_w ? Rcpp::List::create(Rcpp::_["z"] = res[b].z_missing, Rcpp::_["w"] = res[b].w,
-                                           Rcpp::_["lam"] = res[b].lam)
-                      : Rcpp::List::create(Rcpp::_["z"] = res[b].z_missing);
+    Rcpp::List zl(K), wl(K);
+    for (int t = 0; t < K; ++t) {
+      method(b, t) = res[b].method[t];
+      zl[t] = res[b].z_missing[t];
+      wl[t] = res[b].w[t];
+    }
+    out[b] = Rcpp::List::create(Rcpp::_["z"] = zl, Rcpp::_["w"] = wl, Rcpp::_["lam"] = res[b].lam,
+                                Rcpp::_["ld"] = res[b].ld);
   }
   out.attr("method") = method;
   return out;

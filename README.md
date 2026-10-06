@@ -30,6 +30,10 @@ LDbuild("ukb_imp_chr{CHR}.pgen", "ukbEUR_LD", threads = 16)
 fit <- sbayeseigen("trait.ma", "ukbEUR_LD", out = "trait", threads = 8)
 fit$par$Vg
 head(fit$snpRes)   # SNP A1 A2 Block beta beta_std, every snp.info SNP
+
+# several traits: each eigen file is still read twice in total; results equal single-trait runs.
+# out is a directory; writes prs/<trait>/<trait>_sbeigen.snpRes, .par.rds and .log
+fit <- sbayeseigen(c(LDL = "ldl.ma", HDL = "hdl.ma", TG = "tg.ma"), "ukbEUR_LD", out = "prs", threads = 8)
 ```
 
 The steps also run on their own, like SBayesRC, and `sbayeseigen()` accepts an imputed file:
@@ -41,7 +45,7 @@ The steps also run on their own, like SBayesRC, and `sbayeseigen()` accepts an i
 | `sbrc(mafile, LDdir, outPrefix, annot)` | `sbayeseigen(ma, ld, out)` (no annotations) |
 
 `ldscore.txt` is written by `LDbuild()`. For an SBayesRC LD folder without it, `sbayeseigen()`
-computes the LD scores from the eigen files and saves them there when the folder is writable.
+computes the LD scores from the eigen files during its first pass, at no extra read.
 The output has posterior mean effects only; there are no PIPs.
 
 Command line:
@@ -50,6 +54,7 @@ Command line:
 S=$(Rscript -e 'cat(system.file("scripts", package = "SBayesEigen"))')
 Rscript $S/ld_build.R geno=ukb_imp_chr{CHR}.pgen out=ukbEUR_LD threads=16
 Rscript $S/run_vi.R ma=trait.ma ld=ukbEUR_LD out=trait threads=8
+Rscript $S/run_vi.R ma=ldl.ma,hdl.ma,tg.ma ld=ukbEUR_LD out=prs threads=8
 ```
 
 ## Methods
@@ -72,7 +77,7 @@ Rscript $S/run_vi.R ma=trait.ma ld=ukbEUR_LD out=trait threads=8
   - LD score regression on the typed (not imputed) SNPs gives the centre of a
     scaled-inverse-chi-squared prior (4 df) on Vg; h2 is floored at 0.01.
   - Variational EM with SQUAREM. The likelihood is diagonal in the eigen basis, so the
-    mean-field posterior is exact. It stops when Vg changes by less than 1e-4 twice.
+    mean-field posterior is exact. It stops when Vg changes by less than `tol` (1e-4) twice.
   - ve = 1 by default. With `ve = "ldsc"` it is the LDSC intercept, clamped to [0.9, 2].
 
 ## License

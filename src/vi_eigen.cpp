@@ -13,60 +13,46 @@
 #endif
 using namespace Rcpp;
 
-// pass 1 for summary data already on every SNP of each block: w = D^{-1/2} U' bhat, lambda
+// pass 2: beta = U alpha per block for K traits in one sweep over U; alpha[[t]][[b]] empty: trait t
+// skips block b (beta empty)
 // [[Rcpp::export]]
-List eig_w_cpp(CharacterVector files, List bhat, double thresh, int threads) {
-  const int nb = files.size();
+List eig_beta_cpp(CharacterVector files, List alpha, double thresh, int threads) {
+  const int nb = files.size(), K = alpha.size();
   std::vector<std::string> fs(nb);
-  std::vector<std::vector<double>> bh(nb), w(nb), lam(nb);
-  for (int b = 0; b < nb; b++) { fs[b] = as<std::string>(files[b]); bh[b] = as<std::vector<double>>(bhat[b]); }
+  for (int b = 0; b < nb; b++) fs[b] = as<std::string>(files[b]);
+  std::vector<std::vector<std::vector<double>>> al(K, std::vector<std::vector<double>>(nb)), beta = al;
+  for (int t = 0; t < K; t++) {
+    List a = alpha[t];
+    for (int b = 0; b < nb; b++) al[t][b] = as<std::vector<double>>(a[b]);
+  }
   std::vector<int> err(nb, 0);
   #pragma omp parallel for num_threads(threads) schedule(dynamic)
   for (int b = 0; b < nb; b++) {
     EigFile e;
     if (!e.open(fs[b], thresh)) { err[b] = 1; continue; }
-    if (e.m != (int)bh[b].size()) { err[b] = 2; continue; }
-    w[b].resize(e.k); lam[b].resize(e.k);
+    for (int t = 0; t < K; t++) {
+      if (al[t][b].empty()) continue;
+      if ((int)al[t][b].size() != e.k) { err[b] = 1; break; }
+      beta[t][b].assign(e.m, 0.0);
+    }
+    if (err[b]) continue;
     for (int j = 0; j < e.k; j++) {
       const float* u = e.U + (size_t)j * e.m;
-      double s = 0;
-      for (int i = 0; i < e.m; i++) s += u[i] * bh[b][i];
-      lam[b][j] = e.lam[j];
-      w[b][j] = s / std::sqrt((double)e.lam[j]);
+      for (int t = 0; t < K; t++) {
+        if (al[t][b].empty()) continue;
+        const double a = al[t][b][j];
+        if (a == 0) continue;
+        double* bt = beta[t][b].data();
+        for (int i = 0; i < e.m; i++) bt[i] += u[i] * a;
+      }
     }
   }
-  List out(nb);
-  for (int b = 0; b < nb; b++) {
-    if (err[b] == 1) stop("cannot read " + fs[b]);
-    if (err[b] == 2) stop("SNP count differs from " + fs[b]);
-    out[b] = List::create(_["w"] = w[b], _["lam"] = lam[b]);
-  }
-  return out;
-}
-
-// pass 2: beta = U alpha per block
-// [[Rcpp::export]]
-List eig_beta_cpp(CharacterVector files, List alpha, double thresh, int threads) {
-  const int nb = files.size();
-  std::vector<std::string> fs(nb);
-  std::vector<std::vector<double>> al(nb), beta(nb);
-  for (int b = 0; b < nb; b++) { fs[b] = as<std::string>(files[b]); al[b] = as<std::vector<double>>(alpha[b]); }
-  std::vector<int> err(nb, 0);
-  #pragma omp parallel for num_threads(threads) schedule(dynamic)
-  for (int b = 0; b < nb; b++) {
-    EigFile e;
-    if (!e.open(fs[b], thresh) || e.k != (int)al[b].size()) { err[b] = 1; continue; }
-    beta[b].assign(e.m, 0.0);
-    for (int j = 0; j < e.k; j++) {
-      const float* u = e.U + (size_t)j * e.m;
-      const double a = al[b][j];
-      for (int i = 0; i < e.m; i++) beta[b][i] += u[i] * a;
-    }
-  }
-  List out(nb);
-  for (int b = 0; b < nb; b++) {
-    if (err[b]) stop("cannot read " + fs[b] + " (or its components differ from pass 1)");
-    out[b] = beta[b];
+  for (int b = 0; b < nb; b++) if (err[b]) stop("cannot read " + fs[b] + " (or its components differ from pass 1)");
+  List out(K);
+  for (int t = 0; t < K; t++) {
+    List o(nb);
+    for (int b = 0; b < nb; b++) o[b] = beta[t][b];
+    out[t] = o;
   }
   return out;
 }
@@ -154,24 +140,4 @@ List post_cpp(NumericVector w, NumericVector c, NumericVector n, NumericVector g
     { vg += vgl; vv += vvl; }
   }
   return List::create(_["alpha"] = a, _["Vg"] = vg, _["Vg_sd"] = std::sqrt(vv));
-}
-
-// LD scores from the eigen files (all stored components), l_i = sum_k U_ik^2 lambda_k^2 = diag(R^2)
-// [[Rcpp::export]]
-List eig_ldscore_cpp(CharacterVector files) {
-  int nb = files.size();
-  List out(nb);
-  for (int b = 0; b < nb; b++) {
-    std::string f = as<std::string>(files[b]);
-    EigFile e;
-    if (!e.open(f, 0)) stop("cannot read " + f);
-    NumericVector l(e.m);
-    for (int k = 0; k < e.k; k++) {
-      const float* u = e.U + (size_t)k * e.m;
-      const double l2 = (double)e.lam[k] * e.lam[k];
-      for (int i = 0; i < e.m; i++) l[i] += (double)u[i] * u[i] * l2;
-    }
-    out[b] = l;
-  }
-  return out;
 }

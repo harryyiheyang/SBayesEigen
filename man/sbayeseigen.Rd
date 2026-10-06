@@ -4,18 +4,31 @@
 \alias{sbayeseigen}
 \title{Genome-wide PRS from eigen LD and GWAS summary statistics}
 \usage{
-sbayeseigen(ma, ld, out = NULL, threads = 4, ve = 1, thresh = 0.995)
+sbayeseigen(
+  ma,
+  ld,
+  out = NULL,
+  threads = 4,
+  ve = 1,
+  thresh = 0.995,
+  tol = 1e-04
+)
 }
 \arguments{
-\item{ma}{GWAS summary statistics in COJO format (SNP A1 A2 freq b se p N): a path or a
-data.frame, raw or already imputed.}
+\item{ma}{GWAS summary statistics in COJO format (SNP A1 A2 freq b se p N), raw or already
+imputed: a path or a data.frame, or for several traits a character vector of paths or a list
+of data.frames. Trait names are \code{names(ma)}, else the file names without extension.}
 
 \item{ld}{LD folder with \code{snp.info} and \code{block<b>.eigen.bin} (from
 \code{\link{LDbuild}} or SBayesRC). Without \code{ldscore.txt} the LD scores are computed
-from the eigen files (and saved there when the folder is writable).}
+from the eigen files during the first pass.}
 
-\item{out}{Output prefix; writes \code{<out>.snpRes} and \code{<out>.par.rds}.
-\code{NULL} writes nothing.}
+\item{out}{One trait: output prefix, writes \code{<out>.snpRes}, \code{<out>.par.rds} and
+\code{<out>.log}. Several traits: output directory, writes
+\code{<out>/<trait>/<trait>_sbeigen.snpRes}, \code{.par.rds} and \code{.log} (trait folders are
+created when missing; next to SBayesRC's \code{<trait>_sbrc} files when \code{out} is the same
+folder). The log holds all messages and timings; with several traits the reading and pass
+timings are for the whole batch. \code{NULL} writes nothing.}
 
 \item{threads}{Number of OpenMP threads.}
 
@@ -23,11 +36,16 @@ from the eigen files (and saved there when the folder is writable).}
 clamped to [0.9, 2].}
 
 \item{thresh}{Proportion of eigenvalue mass kept per block.}
+
+\item{tol}{VI stops when the posterior genetic variance changes by less than \code{tol}
+(relative) in two consecutive iterations.}
 }
 \value{
-Invisibly, a list with \code{snpRes} (SNP, A1, A2, Block, beta, beta_std, every
-  \code{snp.info} SNP; 0 in blocks without typed SNPs) and \code{par} (Vg, Vg_sd, ve, pi,
-  sigma2, LDSC fit, timings).
+Invisibly. One trait: a list with \code{snpRes} (SNP, A1, A2, Block, beta, beta_std,
+  every \code{snp.info} SNP; 0 in blocks without typed SNPs) and \code{par} (Vg, Vg_sd, ve, pi,
+  sigma2, LDSC fit, timings, and \code{comp}: per eigen component its Block, lambda, n, w and
+  posterior mean alpha, so \eqn{\beta' R \beta = \sum \lambda \alpha^2}). Several traits: a list with \code{beta} (a SNP x trait matrix in
+  \code{snp.info} order) and \code{par} (one entry per trait).
 }
 \description{
 All-in-one: \code{\link{tidy}} and \code{\link{impute}} in memory, LD score regression for
@@ -37,9 +55,15 @@ the heritability prior, variational EM in the eigen space and per-SNP effects. E
 more for \eqn{\beta = U E[\alpha]}. Summary data that are already imputed (an \code{r2}
 column and one row per \code{snp.info} SNP) skip tidy and impute.
 }
+\details{
+Several traits run together read each eigen file the same two times as one trait: imputation,
+the rotation and \eqn{\beta = U E[\alpha]} are done for all traits while a block is in memory.
+LDSC and VI are fitted per trait, so every trait gets the same result as on its own.
+}
 \examples{
 \dontrun{
 fit <- sbayeseigen("trait.ma", "ukbEUR_LD", out = "trait", threads = 8)
 fit$par$Vg
+sbayeseigen(c(LDL = "ldl.ma", HDL = "hdl.ma"), "ukbEUR_LD", out = "prs", threads = 8)
 }
 }

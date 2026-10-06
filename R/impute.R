@@ -18,32 +18,57 @@
 #'   \code{r2} column.
 #' @export
 impute <- function(ma, ld, out = NULL, threads = 4) {
-  r <- .impute(ma, ld, .read_snpinfo(ld), thresh = 0.995, threads = threads)
-  if (!is.null(out) && !r$done) {
+  t0 <- proc.time()[[3]]
+  si <- .read_snpinfo(ld)
+  ma <- if (is.data.frame(ma)) as.data.table(ma) else fread(ma, showProgress = FALSE)
+  if (.is_imputed(ma, si)) {
+    message("Already imputed: r2 exists and the summary data has one row per snp.info SNP")
+    return(invisible(ma))
+  }
+  a <- .align(ma, si); res <- a$res
+  rows <- .block_rows(si)
+  obs <- is.finite(res$b)
+  nty <- vapply(rows, function(r) sum(obs[r]), 0)
+  run <- nty > 0 & nty < lengths(rows)
+  tr <- lapply(rows[run], function(r) r[obs[r]])
+  imp <- impute_blocks_eigen_cpp(.eig_files(ld, names(rows)[run]), list(Map(function(r, t) match(t, r) - 1L, rows[run], tr)),
+                                 list(lapply(tr, function(t) res$b[t] / res$se[t])), list(), a$Nmed, 0.995, threads,
+                                 FALSE, FALSE)
+  # fill imputed SNPs on the SBayesRC scale: b = z sqrt(var_y) / sqrt(2pq (N + z^2)); as.integer() because
+  # set(i = NULL) would touch every row
+  res[, r2 := 1]
+  miss <- as.integer(unlist(lapply(rows[run], function(r) r[!obs[r]]), use.names = FALSE))
+  z <- unlist(lapply(imp, function(x) x$z[[1]]), use.names = FALSE)
+  base <- sqrt(2 * res$freq[miss] * (1 - res$freq[miss]) * (res$N[miss] + z^2))
+  set(res, miss, c("b", "se", "r2", "p"), list(z * sqrt(a$vp) / base, sqrt(a$vp) / base, 0, stats::pchisq(z^2, 1, lower.tail = FALSE)))
+  none <- as.integer(unlist(rows[nty == 0], use.names = FALSE))
+  set(res, none, c("b", "se", "r2", "p"), list(0, 1, -1, 1))
+  meth <- attr(imp, "method")
+  message(sprintf("Imputed %d SNPs in %d blocks (solver missing/eigen/typed: %d/%d/%d); %d blocks without typed SNPs; %.1f s",
+                  length(miss), sum(meth >= 0), sum(meth == 0), sum(meth == 1), sum(meth == 2), sum(nty == 0),
+                  proc.time()[[3]] - t0))
+  if (!is.null(out)) {
     tmp <- tempfile(pattern = paste0(".", basename(out), ".tmp-"), tmpdir = dirname(out))
     on.exit(if (file.exists(tmp)) unlink(tmp), add = TRUE)
-    fwrite(r$ma, tmp, sep = "\t", quote = FALSE, na = "NA")
+    fwrite(res, tmp, sep = "\t", quote = FALSE, na = "NA")
     if (!file.rename(tmp, out)) stop("imputation finished, but replacing ", out, " failed")
   }
-  invisible(r$ma)
+  invisible(res)
 }
 
-# si: .std_snpinfo table. thresh: eigen cut (0 = all stored components). return_w: also return
-# pass 1 (w, lambda) for every block with a typed SNP. Returns list(ma, done, blocks, run).
-.impute <- function(ma, ld, si, thresh, threads, return_w = FALSE) {
-  t0 <- proc.time()[[3]]
-  ma <- if (is.data.frame(ma)) as.data.table(ma) else fread(ma, showProgress = FALSE)
+.is_imputed <- function(ma, si) "r2" %in% names(ma) && nrow(ma) == nrow(si)
+
+# snp.info row indices per block, blocks in snp.info order
+.block_rows <- function(si) split(seq_len(nrow(si)), factor(si$Block, levels = unique(si$Block)))
+
+# summary data aligned to snp.info (alleles flipped to snp.info A1): one row per snp.info SNP, b/se/p NA
+# where missing, N filled with the median; vp = median var(y) estimate, Nmed = median N
+.align <- function(ma, si) {
   cols <- c("SNP", "A1", "A2", "freq", "b", "se", "p", "N")
   if (!all(cols %in% names(ma))) stop("missing columns in the summary data: ", paste(setdiff(cols, names(ma)), collapse = ", "))
-  if ("r2" %in% names(ma) && nrow(ma) == nrow(si)) {
-    message("Already imputed: r2 exists and the summary data has one row per snp.info SNP")
-    return(list(ma = ma, done = TRUE))
-  }
   vp <- stats::median(2 * ma$freq * (1 - ma$freq) * (ma$N * ma$se^2 + ma$b^2), na.rm = TRUE)
   Nmed <- stats::median(ma$N, na.rm = TRUE)
   if (!is.finite(vp) || !is.finite(Nmed)) stop("cannot compute a finite median var(y) or N from the summary data")
-
-  # align to snp.info
   m <- match(ma$SNP, si$SNP)
   i <- which(!is.na(m)); j <- m[i]
   same <- ma$A1[i] == si$A1[j] & ma$A2[i] == si$A2[j]
@@ -55,35 +80,7 @@ impute <- function(ma, ld, out = NULL, threads = 4) {
   k <- i[same | flip]; s <- ifelse(flip[same | flip], -1, 1)
   set(res, j[same | flip], c("freq", "b", "se", "p", "N"),
       list(ifelse(s < 0, 1 - ma$freq[k], ma$freq[k]), s * ma$b[k], ma$se[k], ma$p[k], ma$N[k]))
+  res[!is.finite(b) | !is.finite(se), `:=`(b = NA_real_, se = NA_real_)]
   res[is.na(N), N := Nmed]
-
-  # blocks: typed index (0-based) and z per block
-  typed <- is.finite(res$b)
-  rows <- split(seq_len(nrow(si)), factor(si$Block, levels = unique(si$Block)))
-  nty <- vapply(rows, function(r) sum(typed[r]), 0)
-  run <- if (return_w) nty > 0 else nty > 0 & nty < lengths(rows)
-  tr <- lapply(rows[run], function(r) r[typed[r]])
-  out <- impute_blocks_eigen_cpp(file.path(ld, paste0("block", names(rows)[run], ".eigen.bin")),
-                                 Map(function(r, t) match(t, r) - 1L, rows[run], tr),
-                                 lapply(tr, function(t) res$b[t] / res$se[t]),
-                                 if (return_w) lapply(tr, function(t) res$N[t]) else list(),
-                                 Nmed, thresh, threads, return_w)
-
-  # fill imputed SNPs (same scale as SBayesRC: b = z sqrt(var_y) / sqrt(2pq (N + z^2)))
-  res[, r2 := 1]
-  # set(i = NULL) would touch every row, hence as.integer()
-  miss <- as.integer(unlist(lapply(rows[run], function(r) r[!typed[r]]), use.names = FALSE))
-  z <- unlist(lapply(out, `[[`, "z"), use.names = FALSE)
-  base <- sqrt(2 * res$freq[miss] * (1 - res$freq[miss]) * (res$N[miss] + z^2))
-  set(res, miss, c("b", "se", "r2", "p"), list(z * sqrt(vp) / base, sqrt(vp) / base, 0, stats::pchisq(z^2, 1, lower.tail = FALSE)))
-  none <- as.integer(unlist(rows[nty == 0], use.names = FALSE))
-  set(res, none, c("b", "se", "r2", "p"), list(0, 1, -1, 1))
-  res[!is.finite(b), b := 0]
-  res[!is.finite(se), se := 1]
-  res[!is.finite(p), p := 1]
-  meth <- attr(out, "method")
-  message(sprintf("Imputed %d SNPs in %d blocks (solver missing/eigen/typed: %d/%d/%d); %d blocks without typed SNPs; %.1f s",
-                  length(miss), sum(meth >= 0), sum(meth == 0), sum(meth == 1), sum(meth == 2), sum(nty == 0),
-                  proc.time()[[3]] - t0))
-  list(ma = res, done = FALSE, blocks = if (return_w) out, run = names(rows)[run])
+  list(res = res, vp = vp, Nmed = Nmed)
 }
