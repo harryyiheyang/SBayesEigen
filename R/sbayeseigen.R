@@ -135,9 +135,9 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     vj <- vt + kp / lam   # residual variance per component; VI sees n / vj with ve = 1
     if (abld) {
       ab <- .abj_setup(x, p1[use], rows[run][use], t)
-      fit <- abj_vi(w, nc / vj, ab$blk, tau = mcp[[1]], a = mcp[[2]], threads = threads)
+      fit <- abj_vi(w, nc / vj, ab$blk, tau = mcp[[1]], a = mcp[[2]], threads = threads, h2p = h2p)
       if (!fit$converged) warning("ABC did not converge in ", fit$iter, " iterations")
-      fit$Vg_sd <- NA_real_; fit$gamma <- .abc_const$gB; fit$pi <- fit$piB; fit$sigma2 <- fit$s2B
+      fit$Vg_sd <- NA_real_; fit$gamma <- .abc_bprior(h2p, 1)$gB; fit$pi <- fit$piB; fit$sigma2 <- fit$s2B
       abc_tab <- data.table(SNP = si$SNP[c(unlist(ab$snpA), unlist(ab$snpC))],
                             Block = c(rep(names(rows)[run][use], lengths(ab$snpA)), rep(names(rows)[run][use], lengths(ab$snpC))),
                             set = rep(c("A", "C"), c(length(unlist(ab$snpA)), length(unlist(ab$snpC)))),
@@ -146,9 +146,9 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
       alB <- fit$alpha
     } else if (abc) {
       ab <- .abc_setup(x, p1[use], crow[use], rows[run][use], isann)
-      fit <- abc_vi(w, sqrt(lam), nc / vj, kb, ab$X, ab$role, tau = mcp[[1]], a = mcp[[2]], threads = threads)
+      fit <- abc_vi(w, sqrt(lam), nc / vj, kb, ab$X, ab$role, tau = mcp[[1]], a = mcp[[2]], threads = threads, h2p = h2p)
       if (!fit$converged) warning("ABC did not converge in ", fit$iter, " iterations")
-      fit$Vg_sd <- NA_real_; fit$gamma <- .abc_const$gB; fit$pi <- fit$piB; fit$sigma2 <- fit$s2B
+      fit$Vg_sd <- NA_real_; fit$gamma <- .abc_bprior(h2p, 1)$gB; fit$pi <- fit$piB; fit$sigma2 <- fit$s2B
       cset <- unlist(ab$role) > 0
       abc_tab <- data.table(SNP = si$SNP[unlist(ab$snp)[cset]], Block = rep(names(rows)[run][use], lengths(ab$role))[cset],
                             set = c("A", "C")[unlist(ab$role)[cset]], z = unlist(ab$z)[cset], beta_std = unlist(fit$coef)[cset])
