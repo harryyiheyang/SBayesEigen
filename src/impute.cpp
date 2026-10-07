@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include "eig_file.h"
+#include "ab_file.h"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -245,5 +246,173 @@ Rcpp::List impute_blocks_eigen_cpp(Rcpp::CharacterVector files, Rcpp::List typed
                                 Rcpp::_["ld"] = res[b].ld, Rcpp::_["urow"] = ur);
   }
   out.attr("method") = method;
+  return out;
+}
+
+// ---- ab.bin (LDbuild with A): pass 1 for the joint ABC fit ----
+// R ~ F F', F = [R_.A H, (0; Q2 Lambda2^{1/2})], H = V_A Lambda_A^{-1/2} (R_AA = V_A Lambda_A V_A', kept rankA),
+// Q2 = B rows of UlB. Imputation uses F as a general low-rank factor (lambda = 1; Woodbury when rank < typed,
+// else the typed system). Per trait: wA = H' bhat_A, wB = Lambda2^{-1/2} UlB' bhat. Per block (trait-free):
+// lamA, lamB, XA = H' R_AA (rankA x mA), Cm = H' R_AB Q2 (rankA x kB), and for the candidate rows in B
+// (rows, 0-based in the block; A rows dropped) XCa = H' R_A,i, XCb = Lambda2^{1/2} Q2[i, ] and their rows.
+struct AbResult {
+  std::vector<std::vector<float>> z_missing;
+  std::vector<std::vector<double>> wA, wB;
+  std::vector<double> lamA, lamB, XA, Cm, XCa, XCb;
+  std::vector<int> idxA, crow;
+  int rankA = 0, kB = 0, mA = 0;
+  std::string error;
+};
+
+// [[Rcpp::export]]
+Rcpp::List ab_pass1_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcpp::List z, Rcpp::List n_typed,
+                        Rcpp::NumericVector n_missing, Rcpp::List rows, int threads) {
+  using Eigen::MatrixXd;
+  using Eigen::VectorXd;
+  const float diag_mod = 0.1f;
+  const int nb = files.size(), K = typed_index.size();
+  std::vector<std::string> fs(nb);
+  for (int b = 0; b < nb; ++b) fs[b] = Rcpp::as<std::string>(files[b]);
+  std::vector<std::vector<std::vector<int>>> typed(K, std::vector<std::vector<int>>(nb));
+  std::vector<std::vector<std::vector<float>>> zt(K, std::vector<std::vector<float>>(nb));
+  std::vector<std::vector<std::vector<double>>> nt(K, std::vector<std::vector<double>>(nb));
+  for (int t = 0; t < K; ++t) {
+    Rcpp::List ti = typed_index[t], zi = z[t], ni = n_typed[t];
+    for (int b = 0; b < nb; ++b) {
+      typed[t][b] = Rcpp::as<std::vector<int>>(ti[b]);
+      zt[t][b] = Rcpp::as<std::vector<float>>(zi[b]);
+      nt[t][b] = Rcpp::as<std::vector<double>>(ni[b]);
+    }
+  }
+  std::vector<std::vector<int>> rw(nb);
+  for (int b = 0; b < nb; ++b) rw[b] = Rcpp::as<std::vector<int>>(rows[b]);
+  std::vector<double> nmiss(n_missing.begin(), n_missing.end());
+  std::vector<AbResult> res(nb);
+  Eigen::setNbThreads(1);
+#ifdef _OPENMP
+  #pragma omp parallel for schedule(dynamic) num_threads(std::max(1, threads))
+#endif
+  for (int b = 0; b < nb; ++b) {
+    AbResult& r = res[b];
+    r.z_missing.resize(K); r.wA.resize(K); r.wB.resize(K);
+    try {
+      AbFile f;
+      if (!f.open(fs[b])) throw std::runtime_error("cannot read " + fs[b]);
+      const int m = f.m, mA = f.mA, mB = m - mA, kB = f.kB;
+      r.mA = mA; r.kB = kB;
+      std::vector<int> isA(m, -1), posB(m, -1);
+      for (int a = 0; a < mA; ++a) { isA[f.idxA[a]] = a; r.idxA.push_back(f.idxA[a]); }
+      for (int i = 0, q = 0; i < m; ++i) if (isA[i] < 0) posB[i] = q++;
+      // A: eigen of R_AA, H, R_AA H = V Lambda^{1/2}, G = R_BA H
+      int rk = 0;
+      MatrixXd H, RAH, G(mB, 0);
+      if (mA > 0) {
+        MatrixXd RAA(mA, mA);
+        for (int c = 0; c < mA; ++c) for (int q = 0; q < mA; ++q) RAA(q, c) = f.raa(q, c);
+        Eigen::SelfAdjointEigenSolver<MatrixXd> es(RAA);
+        const VectorXd ev = es.eigenvalues();   // ascending
+        const double mx = ev[mA - 1];
+        // the top rankA components, as LDbuild used for the A rows of UlB (a fresh cut on the float R_AA could differ)
+        std::vector<int> keep;
+        for (int j = mA - 1; j >= 0 && static_cast<int>(keep.size()) < f.rankA; --j) if (ev[j] > 0) keep.push_back(j);
+        if (static_cast<int>(keep.size()) != f.rankA) throw std::runtime_error("R_AA has fewer positive eigenvalues than rankA");
+        (void)mx;
+        rk = static_cast<int>(keep.size());
+        H.resize(mA, rk); RAH.resize(mA, rk);
+        for (int j = 0; j < rk; ++j) {
+          const double l = ev[keep[j]];
+          r.lamA.push_back(l);
+          H.col(j) = es.eigenvectors().col(keep[j]) / std::sqrt(l);
+          RAH.col(j) = es.eigenvectors().col(keep[j]) * std::sqrt(l);
+        }
+        Eigen::Map<const Eigen::MatrixXf> RBA(f.RBA, mB, mA);
+        G = RBA.cast<double>() * H;
+      }
+      r.rankA = rk;
+      // Q2 (B rows of UlB), lamB
+      MatrixXd Q2(mB, kB);
+      for (int j = 0; j < kB; ++j) {
+        const float* u = f.UlB + static_cast<size_t>(j) * m;
+        for (int i = 0; i < m; ++i) if (posB[i] >= 0) Q2(posB[i], j) = u[i];
+        r.lamB.push_back(f.lam[j]);
+      }
+      // per trait: impute, bhat, wA, wB
+      const int nr = rk + kB;
+      for (int t = 0; t < K; ++t) {
+        const std::vector<int>& ty = typed[t][b];
+        if (ty.empty()) continue;
+        std::vector<float> zz(zt[t][b]);
+        for (size_t i = 0; i < ty.size(); ++i) if ((i > 0 && ty[i] <= ty[i - 1]) || ty[i] < 0 || ty[i] >= m) throw std::runtime_error("typed_index must be increasing within the block");
+        const std::vector<int> missing = missing_indices(m, ty);
+        std::vector<double> bh(m, 0.0);
+        auto frow = [&](int i, float* out) {   // row i of F
+          if (isA[i] >= 0) { for (int j = 0; j < rk; ++j) out[j] = static_cast<float>(RAH(isA[i], j)); for (int j = 0; j < kB; ++j) out[rk + j] = 0; }
+          else { const int q = posB[i]; for (int j = 0; j < rk; ++j) out[j] = static_cast<float>(G(q, j));
+                 for (int j = 0; j < kB; ++j) out[rk + j] = static_cast<float>(Q2(q, j) * std::sqrt(static_cast<double>(f.lam[j]))); }
+        };
+        if (!missing.empty()) {
+          const int no = static_cast<int>(ty.size());
+          Eigen::MatrixXf FO(no, nr); Eigen::VectorXf zf(no);
+          std::vector<float> row(nr);
+          for (int i = 0; i < no; ++i) { frow(ty[i], row.data()); FO.row(i) = Eigen::Map<Eigen::RowVectorXf>(row.data(), nr); zf[i] = zz[i]; }
+          const Eigen::VectorXf coef = direct_eigen_coefficients(FO, Eigen::VectorXf::Ones(nr), zf, diag_mod);
+          r.z_missing[t].resize(missing.size());
+          for (size_t i = 0; i < missing.size(); ++i) {
+            frow(missing[i], row.data());
+            r.z_missing[t][i] = Eigen::Map<Eigen::RowVectorXf>(row.data(), nr).dot(coef);
+          }
+          for (size_t i = 0; i < missing.size(); ++i) { const double v = r.z_missing[t][i]; bh[missing[i]] = v / std::sqrt(nmiss[t] + v * v); }
+        }
+        for (size_t i = 0; i < ty.size(); ++i) { const double v = zz[i]; bh[ty[i]] = v / std::sqrt(nt[t][b][i] + v * v); }
+        r.wA[t].assign(rk, 0.0);
+        for (int j = 0; j < rk; ++j) { double s = 0; for (int a = 0; a < mA; ++a) s += H(a, j) * bh[r.idxA[a]]; r.wA[t][j] = s; }
+        r.wB[t].assign(kB, 0.0);
+        for (int j = 0; j < kB; ++j) {
+          const float* u = f.UlB + static_cast<size_t>(j) * m; double s = 0;
+          for (int i = 0; i < m; ++i) s += u[i] * bh[i];
+          r.wB[t][j] = s / std::sqrt(static_cast<double>(f.lam[j]));
+        }
+      }
+      // design pieces
+      r.XA.assign(static_cast<size_t>(rk) * mA, 0.0);
+      for (int a = 0; a < mA; ++a) for (int j = 0; j < rk; ++j) r.XA[static_cast<size_t>(a) * rk + j] = RAH(a, j);   // H'R_AA = (R_AA H)'
+      r.Cm.assign(static_cast<size_t>(rk) * kB, 0.0);
+      if (rk > 0) { const MatrixXd Cm = G.transpose() * Q2; std::copy(Cm.data(), Cm.data() + Cm.size(), r.Cm.begin()); }
+      for (int i : rw[b]) if (i >= 0 && i < m && isA[i] < 0) r.crow.push_back(i);
+      const size_t s = r.crow.size();
+      r.XCa.assign(static_cast<size_t>(rk) * s, 0.0); r.XCb.assign(static_cast<size_t>(kB) * s, 0.0);
+      for (size_t c = 0; c < s; ++c) {
+        const int q = posB[r.crow[c]];
+        for (int j = 0; j < rk; ++j) r.XCa[c * rk + j] = G(q, j);
+        for (int j = 0; j < kB; ++j) r.XCb[c * kB + j] = Q2(q, j) * std::sqrt(static_cast<double>(f.lam[j]));
+      }
+    } catch (const std::exception& e) {
+      r.error = e.what();
+    } catch (...) {
+      r.error = "unknown C++ error";
+    }
+  }
+  Rcpp::List out(nb);
+  for (int b = 0; b < nb; ++b) {
+    const AbResult& r = res[b];
+    if (!r.error.empty()) Rcpp::stop(fs[b] + ": " + r.error);
+    Rcpp::List zl(K), wl(K);
+    for (int t = 0; t < K; ++t) {
+      zl[t] = r.z_missing[t];
+      std::vector<double> w(r.wA[t]); w.insert(w.end(), r.wB[t].begin(), r.wB[t].end());
+      wl[t] = r.wA[t].empty() && r.wB[t].empty() ? std::vector<double>() : w;
+    }
+    const int rk = r.rankA, kB = r.kB, s = static_cast<int>(r.crow.size());
+    Rcpp::NumericMatrix XA(rk, r.mA), Cm(rk, kB), XCa(rk, s), XCb(kB, s);
+    std::copy(r.XA.begin(), r.XA.end(), XA.begin()); std::copy(r.Cm.begin(), r.Cm.end(), Cm.begin());
+    std::copy(r.XCa.begin(), r.XCa.end(), XCa.begin()); std::copy(r.XCb.begin(), r.XCb.end(), XCb.begin());
+    std::vector<double> lam(r.lamA); lam.insert(lam.end(), r.lamB.begin(), r.lamB.end());
+    std::vector<int> ia(r.idxA), cr(r.crow);
+    for (int& v : ia) ++v;
+    for (int& v : cr) ++v;
+    out[b] = Rcpp::List::create(Rcpp::_["z"] = zl, Rcpp::_["w"] = wl, Rcpp::_["lam"] = lam, Rcpp::_["rankA"] = rk,
+                                Rcpp::_["iA"] = ia, Rcpp::_["XA"] = XA, Rcpp::_["Cm"] = Cm,
+                                Rcpp::_["crow"] = cr, Rcpp::_["XCa"] = XCa, Rcpp::_["XCb"] = XCb);
+  }
   return out;
 }

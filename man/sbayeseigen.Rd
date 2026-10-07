@@ -71,7 +71,8 @@ Invisibly. One trait: a list with \code{snpRes} (SNP, A1, A2, Block, beta, beta_
   sigma2, LDSC fit, timings, and \code{comp}: per eigen component its Block, lambda, n, w and
   posterior mean alpha, so \eqn{\beta' R \beta = \sum \lambda \alpha^2} for the B part). ABC adds
   \code{abc}: the A SNPs and C candidates (SNP, Block, set, z, beta_std; beta_std of a C SNP is 0 unless
-  selected) and \code{abc_fit} (Vg_B, A mixture, counts); Vg is then that of the whole fit. Several traits: a list with \code{beta} (a SNP x trait matrix in
+  selected) and \code{abc_fit} (Vg_B, A mixture, counts); Vg is then that of the whole fit. On ab.bin LD the
+  \code{comp} rows of the A components (eigenvalues of \eqn{R_{AA}}) have \code{alpha = NA}. Several traits: a list with \code{beta} (a SNP x trait matrix in
   \code{snp.info} order) and \code{par} (one entry per trait).
 }
 \description{

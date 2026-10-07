@@ -96,6 +96,11 @@ Rscript $S/run_vi.R ma=ldl.ma,hdl.ma,tg.ma ld=ukbEUR_LD out=prs threads=8
     beta'R beta changes by less than 5e-4 and no C effect moves by more than 0.05 z units.
   - The U rows of the candidates are read in pass 1, so ABC adds no pass over the eigen files.
   - `method = "eigen"` is the eigen-space VI alone.
+- **ABC on ab.bin (`LDbuild(..., A = annotation)`):** `sbayeseigen()` uses the stored A set (all A SNPs in
+  beta space) and the Schur-complement eigen components for B, fitted jointly:
+  w_A = H' bhat_A = X_A beta_A + C alpha + e and w_B = Lambda^{-1/2} UlB' bhat = Lambda^{1/2} alpha + e, with
+  C = H' R_AB Q2. Missing SNPs are imputed with R ~ F F', F = [R_.A H, (0; Q2 Lambda^{1/2})].
+  On chr22 (1000G EUR) this beat whole-block ABC and eigen-only in every setting tested.
 
 ## License
 

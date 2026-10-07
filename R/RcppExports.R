@@ -5,8 +5,20 @@ abc_sweep_cpp <- function(X, off, p, r, role, coef, gammaA, piA, s2A, tau, a, do
     .Call(`_SBayesEigen_abc_sweep_cpp`, X, off, p, r, role, coef, gammaA, piA, s2A, tau, a, doA, doC, threads)
 }
 
+abj_sweep_cpp <- function(blk, off, p, r, mA, al, gC, gammaA, piA, s2A, gammaB, piB, s2B, tau, a, threads) {
+    .Call(`_SBayesEigen_abj_sweep_cpp`, blk, off, p, r, mA, al, gC, gammaA, piA, s2A, gammaB, piB, s2B, tau, a, threads)
+}
+
+ab_beta_cpp <- function(files, alpha, threads) {
+    .Call(`_SBayesEigen_ab_beta_cpp`, files, alpha, threads)
+}
+
 impute_blocks_eigen_cpp <- function(files, typed_index, z, n_typed, n_missing, thresh, threads, return_w, want_ld, rows) {
     .Call(`_SBayesEigen_impute_blocks_eigen_cpp`, files, typed_index, z, n_typed, n_missing, thresh, threads, return_w, want_ld, rows)
+}
+
+ab_pass1_cpp <- function(files, typed_index, z, n_typed, n_missing, rows, threads) {
+    .Call(`_SBayesEigen_ab_pass1_cpp`, files, typed_index, z, n_typed, n_missing, rows, threads)
 }
 
 ld_build_cpp <- function(geno, pgen, n_samples, allele_ct, blocks, out_files, cut, threads, a_mask, tolA) {

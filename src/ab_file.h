@@ -62,12 +62,12 @@ struct AbFile {
     const size_t need = 28 + 4 * (static_cast<size_t>(mA) + static_cast<size_t>(mA) * (mA + 1) / 2 + kB +
                                   static_cast<size_t>(m) * kB + mB * mA);
     if (len_ != need) return false;
-    const char* p = base_ + 28;
-    idxA = reinterpret_cast<const int32_t*>(p); p += 4 * static_cast<size_t>(mA);
-    RAA = reinterpret_cast<const float*>(p); p += 4 * (static_cast<size_t>(mA) * (mA + 1) / 2);
-    lam = reinterpret_cast<const float*>(p); p += 4 * static_cast<size_t>(kB);
-    UlB = reinterpret_cast<const float*>(p); p += 4 * static_cast<size_t>(m) * kB;
-    RBA = reinterpret_cast<const float*>(p);
+    const char* cur = base_ + 28;
+    idxA = reinterpret_cast<const int32_t*>(cur); cur += 4 * static_cast<size_t>(mA);
+    RAA = reinterpret_cast<const float*>(cur); cur += 4 * (static_cast<size_t>(mA) * (mA + 1) / 2);
+    lam = reinterpret_cast<const float*>(cur); cur += 4 * static_cast<size_t>(kB);
+    UlB = reinterpret_cast<const float*>(cur); cur += 4 * static_cast<size_t>(m) * kB;
+    RBA = reinterpret_cast<const float*>(cur);
     return true;
   }
   ~AbFile() {

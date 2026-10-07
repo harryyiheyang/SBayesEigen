@@ -55,3 +55,31 @@ abc_vi <- function(w, c, p, kb, X, role, tau = 5, a = 2.5, gA = .abc_const$gA, g
   list(alpha = Ea, coef = coef, Vg = vg, Vg_B = sum((c * Ea)^2), piA = piA, s2A = s2A, piB = piB, s2B = s2B,
        nA = nA, nC_cand = nC, nC = sum(unlist(coef)[unlist(role) == 2L] != 0), iter = it, converged = it < maxit)
 }
+
+# ABC on ab.bin (LDbuild with A; LD-build thread AB_JOINT_FIT.md): A = the stored annotation set, all in beta
+# space; B = the Schur-complement eigen components; C = typed B SNPs with |z| > zC. w = (w_A, w_B) per block,
+# p = per-component precision; blk[[b]] = list(XA, Cm, sl = sqrt(lamB), XCa, XCb). One CAVI sweep of A, B and C
+# per iteration (abj_sweep_cpp); stops as abc_vi.
+abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_const$gB,
+                   tol = 5e-4, stopz = 0.05, maxit = 1000, threads = 4) {
+  rk <- vapply(blk, function(x) nrow(x$XA), 0L); kB <- lengths(lapply(blk, `[[`, "sl"))
+  off <- as.integer(c(0, cumsum(rk + kB))[seq_along(blk)])
+  iB <- unlist(lapply(seq_along(blk), function(b) off[b] + rk[b] + seq_len(kB[b])))
+  sl <- unlist(lapply(blk, `[[`, "sl")); nA <- sum(vapply(blk, function(x) ncol(x$XA), 0L)); nCc <- sum(vapply(blk, function(x) ncol(x$XCb), 0L))
+  mA <- lapply(blk, function(x) numeric(ncol(x$XA))); al <- lapply(kB, numeric); gC <- lapply(blk, function(x) numeric(ncol(x$XCb)))
+  piA <- rep(1 / length(gA), length(gA)); piB <- rep(1 / length(gB), length(gB))
+  pB <- p[iB]; wB <- w[iB]
+  s2a <- max(sum((pB * wB^2 - 1) * pB * sl^2) / sum((pB * sl^2)^2), 1e-8 / sum(sl^2))
+  s2B <- s2a / sum(piB * gB); s2A <- 1e-3 / max(nA, 1) / sum(piA * gA) * 10
+  r <- w + 0; vg_old <- Inf
+  for (it in 1:maxit) {
+    s <- abj_sweep_cpp(blk, off, p, r, mA, al, gC, gA, piA, s2A, gB, piB, s2B, tau, a, threads)
+    if (nA > 0) { piA <- pmax(s$sphiA / nA, 1e-300); s2A <- max(s$saA / max(s$snzA, 1e-12), 1e-12) }
+    piB <- pmax(s$sphiB / length(sl), 1e-300); s2B <- max(s$saB / max(s$snzB, 1e-12), 1e-12)
+    vg <- sum((w - r)^2)   # whitened fit: (w - r)'(w - r) = beta' R beta
+    if (it > 3 && abs(vg - vg_old) < tol * vg && s$dz < stopz) break
+    vg_old <- vg
+  }
+  list(alpha = al, mA = mA, gC = gC, Vg = vg, Vg_B = sum((sl * unlist(al))^2), piA = piA, s2A = s2A, piB = piB, s2B = s2B,
+       nA = nA, nC_cand = nCc, nC = sum(unlist(gC) != 0), iter = it, converged = it < maxit)
+}
