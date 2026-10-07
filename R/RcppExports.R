@@ -9,8 +9,8 @@ impute_blocks_eigen_cpp <- function(files, typed_index, z, n_typed, n_missing, t
     .Call(`_SBayesEigen_impute_blocks_eigen_cpp`, files, typed_index, z, n_typed, n_missing, thresh, threads, return_w, want_ld, rows)
 }
 
-ld_build_cpp <- function(geno, pgen, n_samples, allele_ct, blocks, out_files, cut, threads) {
-    .Call(`_SBayesEigen_ld_build_cpp`, geno, pgen, n_samples, allele_ct, blocks, out_files, cut, threads)
+ld_build_cpp <- function(geno, pgen, n_samples, allele_ct, blocks, out_files, cut, threads, a_mask, tolA) {
+    .Call(`_SBayesEigen_ld_build_cpp`, geno, pgen, n_samples, allele_ct, blocks, out_files, cut, threads, a_mask, tolA)
 }
 
 tidy_cpp <- function(mafile, snpinfo, output, freq_thresh, N_sd_range, rate2pq, want_strings, threads) {

@@ -12,12 +12,24 @@
 #'   \code{chr3}, ... exist is treated as the per-chromosome set. BED is used when both
 #'   formats exist. PGEN needs a plain-text \code{.pvar}.
 #' @param out Output LD folder (created).
-#' @param blockRef Block file with columns Block, Chrom, StartBP, EndBP; default is the
-#'   SBayesRC 4cM blocks on GRCh37 (\code{ref4cM_v37.pos}).
+#' @param blockRef Block file: columns Block, Chrom, StartBP, EndBP, or an interval file with a header and
+#'   three columns chr, start, stop such as LDetect (\code{chr1}/\code{1} both accepted; blocks numbered
+#'   1, 2, ... in genome order). Intervals are [start, stop) in the genome build of \code{geno}. Default is
+#'   the SBayesRC 4cM blocks on GRCh37 (\code{ref4cM_v37.pos}).
 #' @param snps Optional SNP filter: a character vector of IDs, or a file with an ID per
 #'   line or with columns SNP, A1, A2 (e.g. a GWAS \code{.ma} file; alleles must then
 #'   match in either orientation, as in \code{SBayesRC::LDstep1}).
-#' @param thresh Proportion of the positive eigenvalue mass kept per block.
+#' @param thresh Proportion of the positive eigenvalue mass kept per block (of the Schur complement of A in
+#'   AB mode).
+#' @param minsnp Blocks with fewer variants are merged into the smaller neighbouring block on the same
+#'   chromosome (keeping the first block's number) until every block has at least \code{minsnp}; 0 turns
+#'   merging off.
+#' @param A Optional fixed SNP set A (character vector of IDs or a file with one ID per line): every block is
+#'   then written as \code{block<b>.ab.bin}: \eqn{R_{AA}} as is, the B part eigen-decomposed after an exact
+#'   Schur complement \eqn{S = R_{BB} - R_{BA} R_{AA}^+ R_{AB}} (generalized inverse keeping eigenvalues
+#'   above \code{tolA} times the largest), and \eqn{R_{BA}}, so that R can be rebuilt; see
+#'   \code{read_ab()} in the package source for the layout.
+#' @param tolA Relative eigenvalue cut of the generalized inverse of \eqn{R_{AA}}.
 #' @param threads Blocks processed in parallel (each block single-threaded; with a threaded
 #'   OpenBLAS set \code{OPENBLAS_NUM_THREADS=1}). Memory per thread is about
 #'   \eqn{8 m^2 (1 + k/m)} bytes for the largest block of \eqn{m} SNPs.
@@ -34,13 +46,11 @@
 #' LDbuild("/data/ukb_pgen/", "ukbEUR_LD", snps = "trait.ma", threads = 16)
 #' }
 #' @export
-LDbuild <- function(geno, out, thresh = 0.995, threads = 4, snps = NULL, blockRef = NULL) {
+LDbuild <- function(geno, out, thresh = 0.995, threads = 4, snps = NULL, blockRef = NULL, minsnp = 100,
+                    A = NULL, tolA = 1e-12) {
   t0 <- proc.time()[[3]]
   if (is.null(blockRef)) blockRef <- system.file("extdata", "ref4cM_v37.pos", package = "SBayesEigen")
-  pos <- fread(blockRef)
-  if (!all(c("Block", "Chrom", "StartBP", "EndBP") %in% names(pos)))
-    stop("blockRef needs columns Block, Chrom, StartBP, EndBP")
-  pos[, Chrom := as.integer(as.character(Chrom))]
+  pos <- .read_blocks(blockRef)
   pos <- pos[Chrom %in% 1:22]
   setorder(pos, Chrom, StartBP)
   gf <- .geno_files(geno)
@@ -70,6 +80,13 @@ LDbuild <- function(geno, out, thresh = 0.995, threads = 4, snps = NULL, blockRe
   v <- v[!is.na(Block)]
   if (!nrow(v)) stop("no variants fall inside the blocks of blockRef")
   setorder(v, Block, file, fidx)
+  if (minsnp > 0) v[, Block := .merge_blocks(Block, Chrom, minsnp)]
+  ab <- !is.null(A)
+  if (ab) {
+    if (length(A) == 1 && file.exists(A)) A <- fread(A, header = FALSE)[[1]]
+    v[, isA := ID %in% A]
+    message(sum(v$isA), " of ", length(unique(A)), " A SNPs found; blocks written as block<b>.ab.bin")
+  }
   bl <- v[, .(m = .N), by = .(Block, file)]
   if (anyDuplicated(bl$Block)) stop("a block spans several genotype files")
   mx <- max(bl$m)
@@ -77,17 +94,19 @@ LDbuild <- function(geno, out, thresh = 0.995, threads = 4, snps = NULL, blockRe
           "about ", format(signif(threads * 16 * mx^2 / 2^30, 2)), " GB peak memory")
 
   # ---- per file: LD, eigen, write blocks ----
-  if (length(list.files(out, pattern = "^block\\d+\\.eigen\\.bin$")))
-    stop(out, " already holds block*.eigen.bin files; use an empty folder")
+  if (length(list.files(out, pattern = "^block\\d+\\.(eigen|ab)\\.bin$")))
+    stop(out, " already holds block*.eigen.bin or block*.ab.bin files; use an empty folder")
   dir.create(out, showWarnings = FALSE, recursive = TRUE)
   res <- vector("list", nrow(bl))
   for (f in unique(bl$file)) {
     ib <- which(bl$file == f)
-    idx <- split(v$fidx, factor(v$Block, levels = bl$Block))[ib]
-    outs <- file.path(out, paste0("block", bl$Block[ib], ".eigen.bin"))
+    fb <- factor(v$Block, levels = bl$Block)
+    idx <- split(v$fidx, fb)[ib]
+    am <- if (ab) lapply(split(v$isA, fb)[ib], as.integer) else list()
+    outs <- file.path(out, paste0("block", bl$Block[ib], if (ab) ".ab.bin" else ".eigen.bin"))
     tf <- proc.time()[[3]]
     res[ib] <- ld_build_cpp(gf$path[f], gf$type[f] == "pgen", gf$n[f], vl[[f]]$nallele, idx, outs,
-                            thresh, threads)
+                            thresh, threads, am, tolA)
     message(sprintf("  %s: %d blocks, %.1f s", basename(gf$prefix[f]), length(ib), proc.time()[[3]] - tf))
   }
 
@@ -105,11 +124,57 @@ LDbuild <- function(geno, out, thresh = 0.995, threads = 4, snps = NULL, blockRe
   einfo <- data.table(Block = bl$Block, m = vapply(res, `[[`, 0L, "m"), k = vapply(res, `[[`, 0L, "k"),
                       trR = vapply(res, `[[`, 0, "trR"), sumLambda = vapply(res, `[[`, 0, "sumLambda"),
                       relerr_F = vapply(res, `[[`, 0, "relerr_F"))
+  if (ab) einfo[, `:=`(mA = vapply(res, `[[`, 0L, "mA"), rankA = vapply(res, `[[`, 0L, "rankA"))]
   einfo <- einfo[m > 0]   # blocks left without polymorphic variants have no eigen file
   fwrite(einfo, file.path(out, "eigen.info"), sep = "\t")
   message(sprintf("LD reference written to %s (%d SNPs, %d blocks) in %.1f s", out, nrow(v), nrow(einfo),
                   proc.time()[[3]] - t0))
   invisible(einfo)
+}
+
+# block definitions: Block, Chrom, StartBP, EndBP (autosomes, sorted); also a chr/start/stop interval file
+.read_blocks <- function(f) {
+  pos <- fread(f, strip.white = TRUE)
+  if (!all(c("Block", "Chrom", "StartBP", "EndBP") %in% names(pos))) {
+    if (ncol(pos) < 3) stop("blockRef needs columns Block, Chrom, StartBP, EndBP or chr, start, stop")
+    pos <- pos[, 1:3]
+    setnames(pos, c("Chrom", "StartBP", "EndBP"))
+    pos[, Chrom := sub("^chr", "", trimws(as.character(Chrom)), ignore.case = TRUE)]
+    pos <- pos[Chrom %in% as.character(1:22)]
+    pos[, `:=`(Chrom = as.integer(Chrom), StartBP = as.numeric(StartBP), EndBP = as.numeric(EndBP))]
+    setorder(pos, Chrom, StartBP)
+    pos[, Block := seq_len(.N)]
+  }
+  pos[, Chrom := as.integer(as.character(Chrom))]
+  pos <- pos[Chrom %in% 1:22]
+  setorder(pos, Chrom, StartBP)
+  if (pos[, any(utils::head(EndBP, -1) > utils::tail(StartBP, -1)), by = Chrom][, any(V1)])
+    stop("blockRef has overlapping blocks")
+  pos
+}
+
+# per variant (sorted by block, blocks in genome order) the merged block: a block with fewer than minsnp
+# variants joins its smaller neighbour on the same chromosome, until all reach minsnp or one block is left
+.merge_blocks <- function(block, chrom, minsnp) {
+  r <- rle(block)
+  ch <- chrom[cumsum(r$lengths)]
+  id <- r$values; cnt <- r$lengths
+  grp <- seq_along(id)
+  for (c0 in unique(ch)) {
+    w <- which(ch == c0)
+    g <- seq_along(w); n <- cnt[w]
+    while (length(n) > 1 && min(n) < minsnp) {
+      s <- which.min(n)
+      nb <- if (s == 1) 2 else if (s == length(n)) s - 1 else c(s - 1, s + 1)[which.min(n[c(s - 1, s + 1)])]
+      lo <- min(s, nb)
+      g[g == lo + 1] <- lo; g[g > lo + 1] <- g[g > lo + 1] - 1L
+      n[lo] <- n[lo] + n[lo + 1]; n <- n[-(lo + 1)]
+    }
+    grp[w] <- id[w][match(g, g)]   # first original block of each group
+  }
+  nm <- sum(grp != id)
+  if (nm) message(nm, " blocks with fewer than ", minsnp, " variants merged into neighbours")
+  rep(grp, r$lengths)
 }
 
 # genotype files: prefix, type (bed/pgen), path to .bed/.pgen, sample count
@@ -206,4 +271,24 @@ LDbuild <- function(geno, out, thresh = 0.995, threads = 4, snps = NULL, blockRe
   v <- v[ID %in% snps]
   message(nrow(v), " variants left after the SNP filter")
   v
+}
+
+# blockN.ab.bin (LDbuild with A): int32 m, mA, kB, rankA; float tolA, cutB, sumLambdaB; int32 idxA[mA]
+# (0-based within the block); float R_AA upper triangle, column-major packed; float lambdaB[kB];
+# float UlB[m * kB] column-major (B rows: eigenvectors Q2 of S = R_BB - R_BA R_AA^+ R_AB; A rows:
+# -R_AA^+ R_AB Q2); float R_BA[(m - mA) * mA] column-major (B rows in block order).
+# P = UlB diag(lambdaB)^-1/2 gives P'RP = I and R[A, ] P = 0 in sample; R is rebuilt as
+# [R_AA, R_AB; R_BA, Q2 diag(lambdaB) Q2' + R_BA R_AA^+ R_AB].
+.read_ab <- function(file) {
+  h <- file(file, "rb"); on.exit(close(h))
+  mk <- readBin(h, integer(), n = 4, size = 4); m <- mk[1]; mA <- mk[2]; kB <- mk[3]
+  ct <- readBin(h, numeric(), n = 3, size = 4)
+  iA <- readBin(h, integer(), n = mA, size = 4) + 1L
+  up <- readBin(h, numeric(), n = mA * (mA + 1) / 2, size = 4)
+  lambda <- readBin(h, numeric(), n = kB, size = 4)
+  UlB <- matrix(readBin(h, numeric(), n = m * kB, size = 4), m, kB)
+  RBA <- matrix(readBin(h, numeric(), n = (m - mA) * mA, size = 4), m - mA, mA)
+  RAA <- matrix(0, mA, mA); RAA[upper.tri(RAA, diag = TRUE)] <- up; RAA[lower.tri(RAA)] <- t(RAA)[lower.tri(RAA)]
+  list(m = m, mA = mA, kB = kB, rankA = mk[4], tolA = ct[1], cutB = ct[2], sumLambda = ct[3],
+       iA = iA, RAA = RAA, lambda = lambda, UlB = UlB, RBA = RBA)
 }

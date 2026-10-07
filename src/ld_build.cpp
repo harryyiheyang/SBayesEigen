@@ -6,9 +6,14 @@
 // Blocks run in parallel (OpenMP), each block single-threaded, largest blocks first.
 // Output: SBayesRC blockN.eigen.bin (int32 m, int32 k, float sumLambda, float thresh,
 // float lambda[k], float U[m*k]) plus per-SNP frequency, N and unbiased LD scores.
+// With a fixed SNP set A (AB mode) each block is written as blockN.ab.bin instead: R_AA kept, B eigen-
+// decomposed after an exact Schur complement with the generalized inverse of R_AA, and R_BA kept so R can be
+// rebuilt (layout at write_ab below).
 #define USE_FC_LEN_T
 #include <Rcpp.h>
 #include <R_ext/Lapack.h>
+#include <R_ext/BLAS.h>
+#include <cmath>
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
@@ -137,13 +142,166 @@ const std::array<int, 4> kPgenCode = {2, 1, 0, -1};
 struct BlockOut {
   std::vector<int> keep;             // 1 = polymorphic, used
   std::vector<double> freq, nobs, ld;   // ld: unbiased LD score sum_j [r2 - (1 - r2) / (n - 2)]
-  int m = 0, k = 0;
+  int m = 0, k = 0, mA = 0, rankA = 0;
   double sumLambda = 0, trR = 0, relerr = 0;
   std::string error;
 };
 
+// k leading eigenpairs of the symmetric m x m matrix A (lower triangle used, overwritten): lam = all
+// eigenvalues descending, sl = sum of the positive ones, k = first count reaching cut * sl, Z = m x k
+// eigenvectors in ascending order (column k - 1 is the largest).
+bool top_eigen(std::vector<double>& A, int m, double cut, std::vector<double>& lam, std::vector<double>& Z, int& k,
+               double& sl, std::string& error) {
+  int info = 0, lwork = -1;
+  std::vector<double> d(m), e(m), tau(std::max(m - 1, 1));
+  double wq;
+  F77_CALL(dsytrd)("L", &m, A.data(), &m, d.data(), e.data(), tau.data(), &wq, &lwork, &info FCONE);
+  lwork = static_cast<int>(wq);
+  std::vector<double> work(std::max(lwork, 1));
+  F77_CALL(dsytrd)("L", &m, A.data(), &m, d.data(), e.data(), tau.data(), work.data(), &lwork, &info FCONE);
+  if (info) { error = "dsytrd failed"; return false; }
+  lam = d;
+  std::vector<double> e2(e);
+  F77_CALL(dsterf)(&m, lam.data(), e2.data(), &info);
+  if (info) { error = "dsterf failed"; return false; }
+  std::reverse(lam.begin(), lam.end());   // descending
+  int np = 0;
+  sl = 0;
+  while (np < m && lam[np] > 0) sl += lam[np++];
+  double cs = 0;
+  k = np;
+  for (int j = 0; j < np; ++j) { cs += lam[j]; if (cs >= cut * sl) { k = j + 1; break; } }
+  if (k < 1) { error = "no positive eigenvalues"; return false; }
+  // k leading eigenvectors of the tridiagonal (dstemr returns ascending order)
+  const int il = m - k + 1, iu = m, nzc = k;
+  int mfound = 0, tryrac = 1, liwork = -1;
+  lwork = -1;
+  std::vector<double> w(m), dd(d), ee(e);
+  Z.assign(static_cast<std::size_t>(m) * k, 0);
+  std::vector<int> isuppz(2 * static_cast<std::size_t>(k));
+  int iwq;
+  const double vl = 0, vu = 0;
+  F77_CALL(dstemr)("V", "I", &m, dd.data(), ee.data(), &vl, &vu, &il, &iu, &mfound, w.data(), Z.data(), &m,
+                   &nzc, isuppz.data(), &tryrac, &wq, &lwork, &iwq, &liwork, &info FCONE FCONE);
+  lwork = static_cast<int>(wq); liwork = iwq;
+  work.assign(std::max(lwork, 1), 0);
+  std::vector<int> iwork(std::max(liwork, 1));
+  F77_CALL(dstemr)("V", "I", &m, dd.data(), ee.data(), &vl, &vu, &il, &iu, &mfound, w.data(), Z.data(), &m,
+                   &nzc, isuppz.data(), &tryrac, work.data(), &lwork, iwork.data(), &liwork, &info FCONE FCONE);
+  if (info || mfound != k) { error = "dstemr failed"; return false; }
+  // back-transform: Z = Q Z
+  lwork = -1;
+  F77_CALL(dormtr)("L", "L", "N", &m, &k, A.data(), &m, tau.data(), Z.data(), &m, &wq, &lwork, &info
+                   FCONE FCONE FCONE);
+  lwork = static_cast<int>(wq);
+  work.assign(std::max(lwork, 1), 0);
+  F77_CALL(dormtr)("L", "L", "N", &m, &k, A.data(), &m, tau.data(), Z.data(), &m, work.data(), &lwork, &info
+                   FCONE FCONE FCONE);
+  if (info) { error = "dormtr failed"; return false; }
+  return true;
+}
+
+// AB mode. R (m x m, both triangles) with a_kept[j] = 1 for SNPs in A. R_AA = Q_A L_A Q_A'; the generalized
+// inverse keeps eigenvalues > tolA * max, R_AA^+ = H H' with H = Q_A L_A^-1/2 (rankA columns). G = R_BA H,
+// S = R_BB - G G' = Q2 L2 Q2' cut at `cut`; UlB has B rows Q2 and A rows -H G' Q2.
+// blockN.ab.bin: int32 m, mA, kB, rankA; float tolA, cutB, sumLambdaB; int32 idxA[mA] (0-based in block);
+// float R_AA upper triangle packed column-major (mA(mA+1)/2); float lambdaB[kB]; float UlB[m*kB] column-major;
+// float R_BA[(m-mA)*mA] column-major (B rows in block order).
+void ab_block(std::vector<double>& R, int m, const std::vector<int>& a_kept, double sumR2, const std::string& out_file,
+              double cut, double tolA, BlockOut& res) {
+  std::vector<int> iA, iB;
+  for (int j = 0; j < m; ++j) (a_kept[j] ? iA : iB).push_back(j);
+  const int mA = static_cast<int>(iA.size()), mB = static_cast<int>(iB.size());
+  res.mA = mA;
+  auto at = [&](int i, int j) { return R[static_cast<std::size_t>(j) * m + i]; };
+  std::vector<double> RAA(static_cast<std::size_t>(mA) * mA), RBA(static_cast<std::size_t>(mB) * mA);
+  for (int c = 0; c < mA; ++c) {
+    for (int r = 0; r < mA; ++r) RAA[static_cast<std::size_t>(c) * mA + r] = at(iA[r], iA[c]);
+    for (int r = 0; r < mB; ++r) RBA[static_cast<std::size_t>(c) * mB + r] = at(iB[r], iA[c]);
+  }
+  // R_BB compacted in place to the leading mB x mB (targets never pass their sources)
+  for (int c = 0; c < mB; ++c)
+    for (int r = 0; r < mB; ++r) R[static_cast<std::size_t>(c) * mB + r] = at(iB[r], iB[c]);
+  R.resize(static_cast<std::size_t>(mB) * mB);
+  int info = 0, rankA = 0;
+  std::vector<double> H;   // mA x rankA
+  if (mA > 0) {
+    std::vector<double> Q(RAA), la(mA);
+    int lwork = -1;
+    double wq;
+    F77_CALL(dsyev)("V", "L", &mA, Q.data(), &mA, la.data(), &wq, &lwork, &info FCONE FCONE);
+    lwork = static_cast<int>(wq);
+    std::vector<double> work(std::max(lwork, 1));
+    F77_CALL(dsyev)("V", "L", &mA, Q.data(), &mA, la.data(), work.data(), &lwork, &info FCONE FCONE);
+    if (info) { res.error = "dsyev of R_AA failed"; return; }
+    const double mx = *std::max_element(la.begin(), la.end());
+    for (int j = 0; j < mA; ++j) {
+      if (!(la[j] > tolA * mx)) continue;
+      const double s = 1 / std::sqrt(la[j]);
+      for (int r = 0; r < mA; ++r) H.push_back(Q[static_cast<std::size_t>(j) * mA + r] * s);
+      ++rankA;
+    }
+  }
+  res.rankA = rankA;
+  std::vector<double> G(static_cast<std::size_t>(mB) * std::max(rankA, 1));
+  const double one = 1, zero = 0, mone = -1;
+  if (rankA > 0 && mB > 0) {
+    F77_CALL(dgemm)("N", "N", &mB, &rankA, &mA, &one, RBA.data(), &mB, H.data(), &mA, &zero, G.data(), &mB
+                    FCONE FCONE);
+    F77_CALL(dsyrk)("L", "N", &mB, &rankA, &mone, G.data(), &mB, &one, R.data(), &mB FCONE FCONE);
+    for (int c = 0; c < mB; ++c)   // symmetric for the S2 sum below
+      for (int r = 0; r < c; ++r) R[static_cast<std::size_t>(c) * mB + r] = R[static_cast<std::size_t>(r) * mB + c];
+  }
+  std::vector<double> lam, Z;
+  int k = 0;
+  double sl = 0;
+  if (mB > 0) {
+    double sumS2 = 0;
+    for (double x : R) sumS2 += x * x;
+    if (!top_eigen(R, mB, cut, lam, Z, k, sl, res.error)) return;
+    double sumD2 = 0;
+    for (int j = 0; j < k; ++j) sumD2 += lam[j] * lam[j];
+    res.relerr = sumS2 > 0 ? std::sqrt(std::max(sumS2 - sumD2, 0.0) / sumS2) : 0;
+  }
+  std::vector<double>().swap(R);
+  res.k = k; res.sumLambda = sl;
+  // UlB, descending columns
+  std::vector<float> Ul(static_cast<std::size_t>(m) * k);
+  std::vector<double> Q2(static_cast<std::size_t>(mB) * k);
+  for (int c = 0; c < k; ++c) {
+    const double* z = Z.data() + static_cast<std::size_t>(k - 1 - c) * mB;
+    std::copy(z, z + mB, Q2.data() + static_cast<std::size_t>(c) * mB);
+    for (int r = 0; r < mB; ++r) Ul[static_cast<std::size_t>(c) * m + iB[r]] = static_cast<float>(z[r]);
+  }
+  if (rankA > 0 && k > 0) {
+    std::vector<double> T(static_cast<std::size_t>(rankA) * k), UA(static_cast<std::size_t>(mA) * k);
+    F77_CALL(dgemm)("T", "N", &rankA, &k, &mB, &one, G.data(), &mB, Q2.data(), &mB, &zero, T.data(), &rankA
+                    FCONE FCONE);
+    F77_CALL(dgemm)("N", "N", &mA, &k, &rankA, &mone, H.data(), &mA, T.data(), &rankA, &zero, UA.data(), &mA
+                    FCONE FCONE);
+    for (int c = 0; c < k; ++c)
+      for (int r = 0; r < mA; ++r) Ul[static_cast<std::size_t>(c) * m + iA[r]] = static_cast<float>(UA[static_cast<std::size_t>(c) * mA + r]);
+  }
+  std::FILE* fp = std::fopen(out_file.c_str(), "wb");
+  if (!fp) { res.error = "cannot write " + out_file; return; }
+  const int32_t hdr[4] = {m, mA, k, rankA};
+  const float fh[3] = {static_cast<float>(tolA), static_cast<float>(cut), static_cast<float>(sl)};
+  std::vector<float> up;
+  up.reserve(static_cast<std::size_t>(mA) * (mA + 1) / 2);
+  for (int c = 0; c < mA; ++c) for (int r = 0; r <= c; ++r) up.push_back(static_cast<float>(RAA[static_cast<std::size_t>(c) * mA + r]));
+  std::vector<float> lk(lam.begin(), lam.begin() + k), rba(RBA.begin(), RBA.end());
+  bool ok = std::fwrite(hdr, 4, 4, fp) == 4 && std::fwrite(fh, 4, 3, fp) == 3 &&
+            std::fwrite(iA.data(), 4, mA, fp) == static_cast<std::size_t>(mA) &&
+            std::fwrite(up.data(), 4, up.size(), fp) == up.size() &&
+            std::fwrite(lk.data(), 4, k, fp) == static_cast<std::size_t>(k) &&
+            std::fwrite(Ul.data(), 4, Ul.size(), fp) == Ul.size() &&
+            std::fwrite(rba.data(), 4, rba.size(), fp) == rba.size();
+  ok = (std::fclose(fp) == 0) && ok;
+  if (!ok) res.error = "write failed: " + out_file;
+}
+
 void eigen_block(Source& src, const std::array<int, 4>& code, std::size_t n, const std::vector<int>& idx,
-                 const std::string& out_file, double cut, BlockOut& res) {
+                 const std::vector<int>& isA, const std::string& out_file, double cut, double tolA, BlockOut& res) {
   const std::size_t m0 = idx.size(), stride = (n + 3) / 4;
   static const NibbleTable bed_tab(kBedCode), pgen_tab(kPgenCode);
   const NibbleTable& tab = (code == kBedCode) ? bed_tab : pgen_tab;
@@ -207,55 +365,20 @@ void eigen_block(Source& src, const std::array<int, 4>& code, std::size_t n, con
     res.ld[j] = sa; sumR2 += s2;
     res.trR += c[j];
   }
-  // tridiagonalise (lower), eigenvalues, cut
-  int info = 0, lwork = -1;
-  std::vector<double> d(m), e(m), tau(std::max(m - 1, 1));
-  double wq;
-  F77_CALL(dsytrd)("L", &m, A.data(), &m, d.data(), e.data(), tau.data(), &wq, &lwork, &info FCONE);
-  lwork = static_cast<int>(wq);
-  std::vector<double> work(std::max(lwork, 1));
-  F77_CALL(dsytrd)("L", &m, A.data(), &m, d.data(), e.data(), tau.data(), work.data(), &lwork, &info FCONE);
-  if (info) { res.error = "dsytrd failed"; return; }
-  std::vector<double> lam(d), e2(e);
-  F77_CALL(dsterf)(&m, lam.data(), e2.data(), &info);
-  if (info) { res.error = "dsterf failed"; return; }
-  std::reverse(lam.begin(), lam.end());   // descending
-  int np = 0;
+  if (!isA.empty()) {
+    std::vector<int> a_kept(m);
+    for (int j = 0; j < m; ++j) a_kept[j] = isA[kept[j]];
+    ab_block(A, m, a_kept, sumR2, out_file, cut, tolA, res);
+    return;
+  }
+  std::vector<double> lam, Z;
+  int k = 0;
   double sl = 0;
-  while (np < m && lam[np] > 0) sl += lam[np++];
-  double cs = 0;
-  int k = np;
-  for (int j = 0; j < np; ++j) { cs += lam[j]; if (cs >= cut * sl) { k = j + 1; break; } }
-  if (k < 1) { res.error = "no positive eigenvalues"; return; }
+  if (!top_eigen(A, m, cut, lam, Z, k, sl, res.error)) return;
   res.k = k; res.sumLambda = sl;
   double sumD2 = 0;
   for (int j = 0; j < k; ++j) sumD2 += lam[j] * lam[j];
   res.relerr = std::sqrt(std::max(sumR2 - sumD2, 0.0) / sumR2);
-  // k leading eigenvectors of the tridiagonal (dstemr returns ascending order)
-  const int il = m - k + 1, iu = m, nzc = k;
-  int mfound = 0, tryrac = 1, liwork = -1;
-  lwork = -1;
-  std::vector<double> w(m), Z(static_cast<std::size_t>(m) * k), dd(d), ee(e);
-  std::vector<int> isuppz(2 * static_cast<std::size_t>(k));
-  int iwq;
-  const double vl = 0, vu = 0;
-  F77_CALL(dstemr)("V", "I", &m, dd.data(), ee.data(), &vl, &vu, &il, &iu, &mfound, w.data(), Z.data(), &m,
-                   &nzc, isuppz.data(), &tryrac, &wq, &lwork, &iwq, &liwork, &info FCONE FCONE);
-  lwork = static_cast<int>(wq); liwork = iwq;
-  work.assign(std::max(lwork, 1), 0);
-  std::vector<int> iwork(std::max(liwork, 1));
-  F77_CALL(dstemr)("V", "I", &m, dd.data(), ee.data(), &vl, &vu, &il, &iu, &mfound, w.data(), Z.data(), &m,
-                   &nzc, isuppz.data(), &tryrac, work.data(), &lwork, iwork.data(), &liwork, &info FCONE FCONE);
-  if (info || mfound != k) { res.error = "dstemr failed"; return; }
-  // back-transform: U = Q Z
-  lwork = -1;
-  F77_CALL(dormtr)("L", "L", "N", &m, &k, A.data(), &m, tau.data(), Z.data(), &m, &wq, &lwork, &info
-                   FCONE FCONE FCONE);
-  lwork = static_cast<int>(wq);
-  work.assign(std::max(lwork, 1), 0);
-  F77_CALL(dormtr)("L", "L", "N", &m, &k, A.data(), &m, tau.data(), Z.data(), &m, work.data(), &lwork, &info
-                   FCONE FCONE FCONE);
-  if (info) { res.error = "dormtr failed"; return; }
   std::vector<double>().swap(A);
   // write descending: column c of U is column k - 1 - c of Z
   std::vector<float> buf(static_cast<std::size_t>(m) * k);
@@ -280,15 +403,23 @@ void eigen_block(Source& src, const std::array<int, 4>& code, std::size_t n, con
 
 // geno: path to .bed or .pgen; blocks: list of 0-based variant indices (file order);
 // out_files: one eigen.bin per block; allele_ct: per-variant allele counts (PGEN only).
+// a_mask: empty list (eigen.bin) or, per block, 0/1 per variant of `blocks` marking set A (ab.bin).
 // [[Rcpp::export]]
 Rcpp::List ld_build_cpp(std::string geno, bool pgen, int n_samples, Rcpp::IntegerVector allele_ct,
-                        Rcpp::List blocks, Rcpp::CharacterVector out_files, double cut, int threads) {
+                        Rcpp::List blocks, Rcpp::CharacterVector out_files, double cut, int threads,
+                        Rcpp::List a_mask, double tolA) {
   const int nb = blocks.size();
-  std::vector<std::vector<int>> idx(nb);
+  std::vector<std::vector<int>> idx(nb), isA(nb);
   std::vector<std::string> outs(nb);
+  const bool ab = a_mask.size() > 0;
+  if (ab && a_mask.size() != nb) Rcpp::stop("a_mask must have one entry per block");
   for (int b = 0; b < nb; ++b) {
     idx[b] = Rcpp::as<std::vector<int>>(blocks[b]);
     outs[b] = Rcpp::as<std::string>(out_files[b]);
+    if (ab) {
+      isA[b] = Rcpp::as<std::vector<int>>(a_mask[b]);
+      if (isA[b].size() != idx[b].size()) Rcpp::stop("a_mask and blocks differ in length");
+    }
   }
   const std::size_t n = static_cast<std::size_t>(n_samples);
 #ifdef _OPENMP
@@ -329,7 +460,7 @@ Rcpp::List ld_build_cpp(std::string geno, bool pgen, int n_samples, Rcpp::Intege
     Source& s = *src[0];
 #endif
     try {
-      eigen_block(s, code, n, idx[b], outs[b], cut, res[b]);
+      eigen_block(s, code, n, idx[b], isA[b], outs[b], cut, tolA, res[b]);
     } catch (const std::exception& ex) {
       res[b].error = ex.what();
     } catch (...) {
@@ -343,7 +474,8 @@ Rcpp::List ld_build_cpp(std::string geno, bool pgen, int n_samples, Rcpp::Intege
     out[b] = Rcpp::List::create(
       Rcpp::_["keep"] = Rcpp::LogicalVector(r.keep.begin(), r.keep.end()), Rcpp::_["freq"] = r.freq,
       Rcpp::_["nobs"] = r.nobs, Rcpp::_["ldscore"] = r.ld, Rcpp::_["m"] = r.m, Rcpp::_["k"] = r.k,
-      Rcpp::_["sumLambda"] = r.sumLambda, Rcpp::_["trR"] = r.trR, Rcpp::_["relerr_F"] = r.relerr);
+      Rcpp::_["sumLambda"] = r.sumLambda, Rcpp::_["trR"] = r.trR, Rcpp::_["relerr_F"] = r.relerr,
+      Rcpp::_["mA"] = r.mA, Rcpp::_["rankA"] = r.rankA);
   }
   return out;
 }

@@ -56,8 +56,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // ld_build_cpp
-Rcpp::List ld_build_cpp(std::string geno, bool pgen, int n_samples, Rcpp::IntegerVector allele_ct, Rcpp::List blocks, Rcpp::CharacterVector out_files, double cut, int threads);
-RcppExport SEXP _SBayesEigen_ld_build_cpp(SEXP genoSEXP, SEXP pgenSEXP, SEXP n_samplesSEXP, SEXP allele_ctSEXP, SEXP blocksSEXP, SEXP out_filesSEXP, SEXP cutSEXP, SEXP threadsSEXP) {
+Rcpp::List ld_build_cpp(std::string geno, bool pgen, int n_samples, Rcpp::IntegerVector allele_ct, Rcpp::List blocks, Rcpp::CharacterVector out_files, double cut, int threads, Rcpp::List a_mask, double tolA);
+RcppExport SEXP _SBayesEigen_ld_build_cpp(SEXP genoSEXP, SEXP pgenSEXP, SEXP n_samplesSEXP, SEXP allele_ctSEXP, SEXP blocksSEXP, SEXP out_filesSEXP, SEXP cutSEXP, SEXP threadsSEXP, SEXP a_maskSEXP, SEXP tolASEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -69,7 +69,9 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< Rcpp::CharacterVector >::type out_files(out_filesSEXP);
     Rcpp::traits::input_parameter< double >::type cut(cutSEXP);
     Rcpp::traits::input_parameter< int >::type threads(threadsSEXP);
-    rcpp_result_gen = Rcpp::wrap(ld_build_cpp(geno, pgen, n_samples, allele_ct, blocks, out_files, cut, threads));
+    Rcpp::traits::input_parameter< Rcpp::List >::type a_mask(a_maskSEXP);
+    Rcpp::traits::input_parameter< double >::type tolA(tolASEXP);
+    rcpp_result_gen = Rcpp::wrap(ld_build_cpp(geno, pgen, n_samples, allele_ct, blocks, out_files, cut, threads, a_mask, tolA));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -148,7 +150,7 @@ END_RCPP
 static const R_CallMethodDef CallEntries[] = {
     {"_SBayesEigen_abc_sweep_cpp", (DL_FUNC) &_SBayesEigen_abc_sweep_cpp, 14},
     {"_SBayesEigen_impute_blocks_eigen_cpp", (DL_FUNC) &_SBayesEigen_impute_blocks_eigen_cpp, 10},
-    {"_SBayesEigen_ld_build_cpp", (DL_FUNC) &_SBayesEigen_ld_build_cpp, 8},
+    {"_SBayesEigen_ld_build_cpp", (DL_FUNC) &_SBayesEigen_ld_build_cpp, 10},
     {"_SBayesEigen_tidy_cpp", (DL_FUNC) &_SBayesEigen_tidy_cpp, 8},
     {"_SBayesEigen_eig_beta_cpp", (DL_FUNC) &_SBayesEigen_eig_beta_cpp, 4},
     {"_SBayesEigen_em_step_cpp", (DL_FUNC) &_SBayesEigen_em_step_cpp, 11},

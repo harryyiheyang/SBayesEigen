@@ -4,7 +4,17 @@
 \alias{LDbuild}
 \title{Build an eigen-decomposed LD reference from PLINK genotypes}
 \usage{
-LDbuild(geno, out, thresh = 0.995, threads = 4, snps = NULL, blockRef = NULL)
+LDbuild(
+  geno,
+  out,
+  thresh = 0.995,
+  threads = 4,
+  snps = NULL,
+  blockRef = NULL,
+  minsnp = 100,
+  A = NULL,
+  tolA = 1e-12
+)
 }
 \arguments{
 \item{geno}{Genotypes: a PLINK 1 \code{.bed} or PLINK 2 \code{.pgen} file or prefix, a
@@ -15,7 +25,8 @@ formats exist. PGEN needs a plain-text \code{.pvar}.}
 
 \item{out}{Output LD folder (created).}
 
-\item{thresh}{Proportion of the positive eigenvalue mass kept per block.}
+\item{thresh}{Proportion of the positive eigenvalue mass kept per block (of the Schur complement of A in
+AB mode).}
 
 \item{threads}{Blocks processed in parallel (each block single-threaded; with a threaded
 OpenBLAS set \code{OPENBLAS_NUM_THREADS=1}). Memory per thread is about
@@ -25,8 +36,22 @@ OpenBLAS set \code{OPENBLAS_NUM_THREADS=1}). Memory per thread is about
 line or with columns SNP, A1, A2 (e.g. a GWAS \code{.ma} file; alleles must then
 match in either orientation, as in \code{SBayesRC::LDstep1}).}
 
-\item{blockRef}{Block file with columns Block, Chrom, StartBP, EndBP; default is the
-SBayesRC 4cM blocks on GRCh37 (\code{ref4cM_v37.pos}).}
+\item{blockRef}{Block file: columns Block, Chrom, StartBP, EndBP, or an interval file with a header and
+three columns chr, start, stop such as LDetect (\code{chr1}/\code{1} both accepted; blocks numbered
+1, 2, ... in genome order). Intervals are [start, stop) in the genome build of \code{geno}. Default is
+the SBayesRC 4cM blocks on GRCh37 (\code{ref4cM_v37.pos}).}
+
+\item{minsnp}{Blocks with fewer variants are merged into the smaller neighbouring block on the same
+chromosome (keeping the first block's number) until every block has at least \code{minsnp}; 0 turns
+merging off.}
+
+\item{A}{Optional fixed SNP set A (character vector of IDs or a file with one ID per line): every block is
+then written as \code{block<b>.ab.bin}: \eqn{R_{AA}} as is, the B part eigen-decomposed after an exact
+Schur complement \eqn{S = R_{BB} - R_{BA} R_{AA}^+ R_{AB}} (generalized inverse keeping eigenvalues
+above \code{tolA} times the largest), and \eqn{R_{BA}}, so that R can be rebuilt; see
+\code{read_ab()} in the package source for the layout.}
+
+\item{tolA}{Relative eigenvalue cut of the generalized inverse of \eqn{R_{AA}}.}
 }
 \value{
 Invisibly, the \code{eigen.info} table. Writes \code{block<b>.eigen.bin},
