@@ -3,7 +3,7 @@ CXX_STD = CXX17
 # src/pgenlib: unmodified pgenlib sources (plink-ng, LGPL >= 3); src/geno_kernel.h from CppMatrix.
 PGENLIB_OBJECTS = pgenlib/pgenlib_misc.o pgenlib/pgenlib_read.o pgenlib/plink2_base.o \
   pgenlib/plink2_bits.o pgenlib/plink2_simd.o
-OBJECTS = RcppExports.o vi_eigen.o ld_build.o impute.o tidy.o $(PGENLIB_OBJECTS)
+OBJECTS = RcppExports.o vi_eigen.o abc.o ld_build.o impute.o tidy.o $(PGENLIB_OBJECTS)
 
 PKG_CPPFLAGS = -DNO_UNALIGNED -DPGENLIB_NOPRINT -Ipgenlib
 PKG_CXXFLAGS = $(SHLIB_OPENMP_CXXFLAGS)

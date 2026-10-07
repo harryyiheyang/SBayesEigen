@@ -42,7 +42,7 @@ The steps also run on their own, like SBayesRC, and `sbayeseigen()` accepts an i
 |---|---|
 | `tidy(mafile, LDdir, output)` | `tidy(ma, ld, out)` |
 | `impute(mafile, LDdir, output)` | `impute(ma, ld, out)` |
-| `sbrc(mafile, LDdir, outPrefix, annot)` | `sbayeseigen(ma, ld, out)` (no annotations) |
+| `sbrc(mafile, LDdir, outPrefix, annot)` | `sbayeseigen(ma, ld, out, annot = snp_ids)` (annotation = a SNP list for A, no per-SNP weights) |
 
 `ldscore.txt` is written by `LDbuild()`. For an SBayesRC LD folder without it, `sbayeseigen()`
 computes the LD scores from the eigen files during its first pass, at no extra read.
@@ -85,6 +85,17 @@ Rscript $S/run_vi.R ma=ldl.ma,hdl.ma,tg.ma ld=ukbEUR_LD out=prs threads=8
     When the LD matches, kappa is about 0.
   - A numeric `kappa` is used as given, with ve0 = `ve`. `kappa = 0` gives a constant `ve`
     (default 1, or `"ldsc"` for the LDSC intercept clamped to [0.9, 2]).
+- **ABC (`method = "abc"`, the default):** beta = beta_A + U alpha + gamma, fitted jointly on the same
+  eigen files.
+  - A: annotation SNPs (`annot`, e.g. coding and xQTL) with |z| > 4.5, thinned to r2 < 0.9 leads.
+    mr.ash in beta space (exact zero plus 1:10).
+  - B: the eigen-space mixture alpha (exact zero plus 1:100:500).
+  - C: the other SNPs with |z| > 4. MCP with `mcp = c(tau = 5, a = 2.5)` on the residual z scale.
+    The threshold scales with the noise: tau sqrt(ve0), with kappa entering per component.
+  - Each iteration sweeps A, takes one EM step for B and sweeps C, all on one residual. It stops when
+    beta'R beta changes by less than 5e-4 and no C effect moves by more than 0.05 z units.
+  - The U rows of the candidates are read in pass 1, so ABC adds no pass over the eigen files.
+  - `method = "eigen"` is the eigen-space VI alone.
 
 ## License
 

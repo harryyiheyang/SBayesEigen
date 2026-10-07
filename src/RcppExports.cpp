@@ -11,9 +11,33 @@ Rcpp::Rostream<true>&  Rcpp::Rcout = Rcpp::Rcpp_cout_get();
 Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 #endif
 
+// abc_sweep_cpp
+List abc_sweep_cpp(List X, IntegerVector off, NumericVector p, NumericVector r, List role, List coef, NumericVector gammaA, NumericVector piA, double s2A, double tau, double a, bool doA, bool doC, int threads);
+RcppExport SEXP _SBayesEigen_abc_sweep_cpp(SEXP XSEXP, SEXP offSEXP, SEXP pSEXP, SEXP rSEXP, SEXP roleSEXP, SEXP coefSEXP, SEXP gammaASEXP, SEXP piASEXP, SEXP s2ASEXP, SEXP tauSEXP, SEXP aSEXP, SEXP doASEXP, SEXP doCSEXP, SEXP threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< List >::type X(XSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type off(offSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type p(pSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type r(rSEXP);
+    Rcpp::traits::input_parameter< List >::type role(roleSEXP);
+    Rcpp::traits::input_parameter< List >::type coef(coefSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type gammaA(gammaASEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type piA(piASEXP);
+    Rcpp::traits::input_parameter< double >::type s2A(s2ASEXP);
+    Rcpp::traits::input_parameter< double >::type tau(tauSEXP);
+    Rcpp::traits::input_parameter< double >::type a(aSEXP);
+    Rcpp::traits::input_parameter< bool >::type doA(doASEXP);
+    Rcpp::traits::input_parameter< bool >::type doC(doCSEXP);
+    Rcpp::traits::input_parameter< int >::type threads(threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(abc_sweep_cpp(X, off, p, r, role, coef, gammaA, piA, s2A, tau, a, doA, doC, threads));
+    return rcpp_result_gen;
+END_RCPP
+}
 // impute_blocks_eigen_cpp
-Rcpp::List impute_blocks_eigen_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcpp::List z, Rcpp::List n_typed, Rcpp::NumericVector n_missing, double thresh, int threads, bool return_w, bool want_ld);
-RcppExport SEXP _SBayesEigen_impute_blocks_eigen_cpp(SEXP filesSEXP, SEXP typed_indexSEXP, SEXP zSEXP, SEXP n_typedSEXP, SEXP n_missingSEXP, SEXP threshSEXP, SEXP threadsSEXP, SEXP return_wSEXP, SEXP want_ldSEXP) {
+Rcpp::List impute_blocks_eigen_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcpp::List z, Rcpp::List n_typed, Rcpp::NumericVector n_missing, double thresh, int threads, bool return_w, bool want_ld, Rcpp::List rows);
+RcppExport SEXP _SBayesEigen_impute_blocks_eigen_cpp(SEXP filesSEXP, SEXP typed_indexSEXP, SEXP zSEXP, SEXP n_typedSEXP, SEXP n_missingSEXP, SEXP threshSEXP, SEXP threadsSEXP, SEXP return_wSEXP, SEXP want_ldSEXP, SEXP rowsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -26,7 +50,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< int >::type threads(threadsSEXP);
     Rcpp::traits::input_parameter< bool >::type return_w(return_wSEXP);
     Rcpp::traits::input_parameter< bool >::type want_ld(want_ldSEXP);
-    rcpp_result_gen = Rcpp::wrap(impute_blocks_eigen_cpp(files, typed_index, z, n_typed, n_missing, thresh, threads, return_w, want_ld));
+    Rcpp::traits::input_parameter< Rcpp::List >::type rows(rowsSEXP);
+    rcpp_result_gen = Rcpp::wrap(impute_blocks_eigen_cpp(files, typed_index, z, n_typed, n_missing, thresh, threads, return_w, want_ld, rows));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -121,7 +146,8 @@ END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
-    {"_SBayesEigen_impute_blocks_eigen_cpp", (DL_FUNC) &_SBayesEigen_impute_blocks_eigen_cpp, 9},
+    {"_SBayesEigen_abc_sweep_cpp", (DL_FUNC) &_SBayesEigen_abc_sweep_cpp, 14},
+    {"_SBayesEigen_impute_blocks_eigen_cpp", (DL_FUNC) &_SBayesEigen_impute_blocks_eigen_cpp, 10},
     {"_SBayesEigen_ld_build_cpp", (DL_FUNC) &_SBayesEigen_ld_build_cpp, 8},
     {"_SBayesEigen_tidy_cpp", (DL_FUNC) &_SBayesEigen_tidy_cpp, 8},
     {"_SBayesEigen_eig_beta_cpp", (DL_FUNC) &_SBayesEigen_eig_beta_cpp, 4},

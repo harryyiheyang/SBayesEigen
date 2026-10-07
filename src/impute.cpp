@@ -130,6 +130,7 @@ struct BlockResult {
   std::vector<std::vector<float>> z_missing;   // per trait
   std::vector<std::vector<double>> w;          // per trait; empty when the trait has no typed SNP here
   std::vector<double> lam, ld;
+  std::vector<double> urow;                    // rows[[b]] of U (|rows| x k, column-major), ABC candidates
   std::vector<int> method;                     // per trait: 0 missing, 1 eigen, 2 typed, -1 nothing to impute
   std::string error;
 };
@@ -137,11 +138,12 @@ struct BlockResult {
 // K traits, each block mapped once. typed_index[[t]][[b]]: zero-based, strictly increasing typed SNPs of
 // trait t in block b (empty: trait t skips the block); z, n_typed: per typed SNP; n_missing[t]: N used
 // for imputed SNPs. return_w: pass 1 per trait while U is in memory, bhat = z / sqrt(N + z^2) on every
-// SNP, w = Lambda^{-1/2} U' bhat. want_ld: eigen LD score sum_j U_ij^2 lambda_j^2 per SNP.
+// SNP, w = Lambda^{-1/2} U' bhat. want_ld: eigen LD score sum_j U_ij^2 lambda_j^2 per SNP. rows (optional, per
+// block, zero-based): SNPs whose U rows on the kept components are returned as urow (|rows| x k), the ABC candidates.
 // [[Rcpp::export]]
 Rcpp::List impute_blocks_eigen_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcpp::List z,
                                    Rcpp::List n_typed, Rcpp::NumericVector n_missing, double thresh, int threads,
-                                   bool return_w, bool want_ld) {
+                                   bool return_w, bool want_ld, Rcpp::List rows) {
   const float diag_mod = 0.1f;
   const int nb = files.size(), K = typed_index.size();
   std::vector<std::string> fs(nb);
@@ -161,6 +163,8 @@ Rcpp::List impute_blocks_eigen_cpp(Rcpp::CharacterVector files, Rcpp::List typed
     }
   }
   std::vector<double> nmiss(n_missing.begin(), n_missing.end());
+  std::vector<std::vector<int>> rw(nb);
+  if (rows.size() == nb) for (int b = 0; b < nb; ++b) rw[b] = Rcpp::as<std::vector<int>>(rows[b]);
   std::vector<BlockResult> res(nb);
   Eigen::setNbThreads(1);
 #ifdef _OPENMP
@@ -209,6 +213,15 @@ Rcpp::List impute_blocks_eigen_cpp(Rcpp::CharacterVector files, Rcpp::List typed
           if (want_ld) for (int i = 0; i < ld.m; ++i) r.ld[i] += static_cast<double>(u[i]) * u[i] * l2;
         }
       }
+      if (!rw[b].empty()) {
+        const size_t s = rw[b].size();
+        for (size_t i = 0; i < s; ++i) if (rw[b][i] < 0 || rw[b][i] >= ld.m) throw std::runtime_error("rows outside the block");
+        r.urow.resize(s * ld.k);
+        for (int j = 0; j < ld.k; ++j) {
+          const float* u = f.U + static_cast<size_t>(j) * ld.m;
+          for (size_t i = 0; i < s; ++i) r.urow[j * s + i] = u[rw[b][i]];
+        }
+      }
     } catch (const std::exception& e) {
       r.error = e.what();
     } catch (...) {
@@ -225,8 +238,11 @@ Rcpp::List impute_blocks_eigen_cpp(Rcpp::CharacterVector files, Rcpp::List typed
       zl[t] = res[b].z_missing[t];
       wl[t] = res[b].w[t];
     }
+    const int s = static_cast<int>(rw[b].size());
+    Rcpp::NumericMatrix ur(s, s ? static_cast<int>(res[b].urow.size() / s) : 0);
+    std::copy(res[b].urow.begin(), res[b].urow.end(), ur.begin());
     out[b] = Rcpp::List::create(Rcpp::_["z"] = zl, Rcpp::_["w"] = wl, Rcpp::_["lam"] = res[b].lam,
-                                Rcpp::_["ld"] = res[b].ld);
+                                Rcpp::_["ld"] = res[b].ld, Rcpp::_["urow"] = ur);
   }
   out.attr("method") = method;
   return out;

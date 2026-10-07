@@ -12,7 +12,10 @@ sbayeseigen(
   ve = 1,
   kappa = "mom",
   thresh = 0.995,
-  tol = 1e-04
+  tol = 1e-04,
+  method = c("abc", "eigen"),
+  annot = NULL,
+  mcp = c(tau = 5, a = 2.5)
 )
 }
 \arguments{
@@ -45,13 +48,30 @@ constant residual variance \code{ve}.}
 \item{thresh}{Proportion of eigenvalue mass kept per block.}
 
 \item{tol}{VI stops when the posterior genetic variance changes by less than \code{tol}
-(relative) in two consecutive iterations.}
+(relative) in two consecutive iterations (\code{method = "eigen"}; ABC uses 5e-4 together with
+a 0.05 z-unit change of the C effects).}
+
+\item{method}{\code{"abc"} (default): \eqn{\beta = \beta_A + U\alpha + \gamma}, fitted jointly on the
+same eigen files. A: annotation SNPs with |z| > 4.5, thinned to r2 < 0.9 leads (largest |z| first),
+mr.ash in \eqn{\beta} space (exact 0 / 1 / 10); B: eigen-space mixture (exact 0 / 1 / 100 / 500);
+C: other SNPs with |z| > 4, MCP on the residual z scale. One iteration sweeps A, updates B and
+sweeps C on a shared residual. The U rows of the candidates are read in pass 1, so no extra pass.
+\code{"eigen"}: eigen-space VI only (six-class grid, LDSC prior on Vg).}
+
+\item{annot}{Annotation SNPs for A (e.g. coding and xQTL): a character vector of SNP IDs or a file
+with a \code{SNP} column (else its first column). \code{NULL}: A is empty.}
+
+\item{mcp}{MCP threshold \code{tau} and concavity \code{a} for C (Yihe 2026-10-07: 5 and 2.5). The
+threshold is in units of the residual z noise sd, \eqn{\tau\sqrt{ve_0}} under constant noise; with
+\code{kappa} the per-component noise \eqn{ve_0 + \kappa/\lambda} enters through the precision.}
 }
 \value{
 Invisibly. One trait: a list with \code{snpRes} (SNP, A1, A2, Block, beta, beta_std,
   every \code{snp.info} SNP; 0 in blocks without typed SNPs) and \code{par} (Vg, Vg_sd, ve, pi,
   sigma2, LDSC fit, timings, and \code{comp}: per eigen component its Block, lambda, n, w and
-  posterior mean alpha, so \eqn{\beta' R \beta = \sum \lambda \alpha^2}). Several traits: a list with \code{beta} (a SNP x trait matrix in
+  posterior mean alpha, so \eqn{\beta' R \beta = \sum \lambda \alpha^2} for the B part). ABC adds
+  \code{abc}: the A SNPs and C candidates (SNP, Block, set, z, beta_std; beta_std of a C SNP is 0 unless
+  selected) and \code{abc_fit} (Vg_B, A mixture, counts); Vg is then that of the whole fit. Several traits: a list with \code{beta} (a SNP x trait matrix in
   \code{snp.info} order) and \code{par} (one entry per trait).
 }
 \description{

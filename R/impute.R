@@ -33,7 +33,7 @@ impute <- function(ma, ld, out = NULL, threads = 4) {
   tr <- lapply(rows[run], function(r) r[obs[r]])
   imp <- impute_blocks_eigen_cpp(.eig_files(ld, names(rows)[run]), list(Map(function(r, t) match(t, r) - 1L, rows[run], tr)),
                                  list(lapply(tr, function(t) res$b[t] / res$se[t])), list(), a$Nmed, 0.995, threads,
-                                 FALSE, FALSE)
+                                 FALSE, FALSE, list())
   # fill imputed SNPs on the SBayesRC scale: b = z sqrt(var_y) / sqrt(2pq (N + z^2)); as.integer() because
   # set(i = NULL) would touch every row
   res[, r2 := 1]

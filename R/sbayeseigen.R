@@ -33,11 +33,25 @@
 #'   constant residual variance \code{ve}.
 #' @param thresh Proportion of eigenvalue mass kept per block.
 #' @param tol VI stops when the posterior genetic variance changes by less than \code{tol}
-#'   (relative) in two consecutive iterations.
+#'   (relative) in two consecutive iterations (\code{method = "eigen"}; ABC uses 5e-4 together with
+#'   a 0.05 z-unit change of the C effects).
+#' @param method \code{"abc"} (default): \eqn{\beta = \beta_A + U\alpha + \gamma}, fitted jointly on the
+#'   same eigen files. A: annotation SNPs with |z| > 4.5, thinned to r2 < 0.9 leads (largest |z| first),
+#'   mr.ash in \eqn{\beta} space (exact 0 / 1 / 10); B: eigen-space mixture (exact 0 / 1 / 100 / 500);
+#'   C: other SNPs with |z| > 4, MCP on the residual z scale. One iteration sweeps A, updates B and
+#'   sweeps C on a shared residual. The U rows of the candidates are read in pass 1, so no extra pass.
+#'   \code{"eigen"}: eigen-space VI only (six-class grid, LDSC prior on Vg).
+#' @param annot Annotation SNPs for A (e.g. coding and xQTL): a character vector of SNP IDs or a file
+#'   with a \code{SNP} column (else its first column). \code{NULL}: A is empty.
+#' @param mcp MCP threshold \code{tau} and concavity \code{a} for C (Yihe 2026-10-07: 5 and 2.5). The
+#'   threshold is in units of the residual z noise sd, \eqn{\tau\sqrt{ve_0}} under constant noise; with
+#'   \code{kappa} the per-component noise \eqn{ve_0 + \kappa/\lambda} enters through the precision.
 #' @return Invisibly. One trait: a list with \code{snpRes} (SNP, A1, A2, Block, beta, beta_std,
 #'   every \code{snp.info} SNP; 0 in blocks without typed SNPs) and \code{par} (Vg, Vg_sd, ve, pi,
 #'   sigma2, LDSC fit, timings, and \code{comp}: per eigen component its Block, lambda, n, w and
-#'   posterior mean alpha, so \eqn{\beta' R \beta = \sum \lambda \alpha^2}). Several traits: a list with \code{beta} (a SNP x trait matrix in
+#'   posterior mean alpha, so \eqn{\beta' R \beta = \sum \lambda \alpha^2} for the B part). ABC adds
+#'   \code{abc}: the A SNPs and C candidates (SNP, Block, set, z, beta_std; beta_std of a C SNP is 0 unless
+#'   selected) and \code{abc_fit} (Vg_B, A mixture, counts); Vg is then that of the whole fit. Several traits: a list with \code{beta} (a SNP x trait matrix in
 #'   \code{snp.info} order) and \code{par} (one entry per trait).
 #' @examples
 #' \dontrun{
@@ -46,17 +60,21 @@
 #' sbayeseigen(c(LDL = "ldl.ma", HDL = "hdl.ma"), "ukbEUR_LD", out = "prs", threads = 8)
 #' }
 #' @export
-sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", thresh = 0.995, tol = 1e-4) {
+sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", thresh = 0.995, tol = 1e-4,
+                        method = c("abc", "eigen"), annot = NULL, mcp = c(tau = 5, a = 2.5)) {
+  method <- match.arg(method)
+  if (!is.null(names(mcp)) && all(c("tau", "a") %in% names(mcp))) mcp <- mcp[c("tau", "a")]
+  if (length(mcp) != 2 || mcp[[1]] <= 0 || mcp[[2]] <= 1) stop("mcp must be c(tau = > 0, a = > 1)")
   # messages still go to the console; with out they are also written to <prefix>.log per trait
   msg <- character(0)
-  r <- withCallingHandlers(.sbayeseigen(ma, ld, out, threads, ve, kappa, thresh, tol),
+  r <- withCallingHandlers(.sbayeseigen(ma, ld, out, threads, ve, kappa, thresh, tol, method, annot, mcp),
                            message = function(m) msg <<- c(msg, sub("\n$", "", conditionMessage(m))))
   for (p in attr(r, "prefix")) writeLines(c(format(Sys.time()), msg), paste0(p, ".log"))
   attr(r, "prefix") <- NULL
   invisible(r)
 }
 
-.sbayeseigen <- function(ma, ld, out, threads, ve, kappa, thresh, tol) {
+.sbayeseigen <- function(ma, ld, out, threads, ve, kappa, thresh, tol, method = "eigen", annot = NULL, mcp = c(5, 2.5)) {
   if (!identical(kappa, "mom") && !(is.numeric(kappa) && length(kappa) == 1 && kappa >= 0))
     stop("kappa must be \"mom\" or a number >= 0")
   tm <- c(start = proc.time()[[3]])
@@ -65,6 +83,8 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
   tn <- .trait_names(ma)
   si <- .read_snpinfo(ld)
   rows <- .block_rows(si)
+  abc <- method == "abc"
+  isann <- if (abc) .read_annot(annot, si) else NULL
 
   # ---- summary data per trait (one full table in memory at a time) ----
   inp <- lapply(seq_len(K), function(t) {
@@ -77,16 +97,19 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
   nty <- matrix(vapply(inp, `[[`, numeric(length(rows)), "nty"), ncol = K)
   run <- which(rowSums(nty > 0) > 0)
   files <- .eig_files(ld, names(rows)[run])
+  # ABC: U rows of every trait's candidates (union over traits), read in pass 1
+  if (abc) for (t in seq_len(K)) inp[[t]]$cand <- .abc_rows(inp[[t]])
+  crow <- if (abc) lapply(run, function(j) sort(unique(unlist(lapply(inp, function(x) x$cand[[j]])))))
   lf <- file.path(ld, "ldscore.txt")
   if (!file.exists(lf)) message("ldscore.txt not found; LD scores computed from the eigen files in pass 1")
   p1 <- impute_blocks_eigen_cpp(files, lapply(inp, function(x) x$ti[run]), lapply(inp, function(x) x$z[run]),
                                 lapply(inp, function(x) x$n[run]), vapply(inp, `[[`, 0, "nmiss"), thresh, threads,
-                                TRUE, !file.exists(lf))
+                                TRUE, !file.exists(lf), if (abc) lapply(crow, as.integer) else list())
   lds <- if (file.exists(lf)) .ldscore_file(lf, si) else .ldscore_eig(p1, rows[run], si)
   tm["pass1"] <- proc.time()[[3]]
 
   # ---- per trait: LDSC on typed SNPs, VI ----
-  alpha <- vector("list", K); par <- vector("list", K)
+  alpha <- vector("list", K); par <- vector("list", K); add <- vector("list", K)
   for (t in seq_len(K)) {
     t0 <- proc.time()[[3]]
     x <- inp[[t]]
@@ -103,10 +126,23 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
       vt <- if (identical(ve, "ldsc")) min(max(ldsc$intercept, 0.9), 2) else as.numeric(ve); kp <- kappa
     }
     vj <- vt + kp / lam   # residual variance per component; VI sees n / vj with ve = 1
-    fit <- vi_eigen(w, sqrt(lam), nc / vj, ve = 1, h2p = h2p, threads = threads, tol = tol)
+    if (abc) {
+      ab <- .abc_setup(x, p1[use], crow[use], rows[run][use], isann)
+      fit <- abc_vi(w, sqrt(lam), nc / vj, kb, ab$X, ab$role, tau = mcp[[1]], a = mcp[[2]], threads = threads)
+      if (!fit$converged) warning("ABC did not converge in ", fit$iter, " iterations")
+      fit$Vg_sd <- NA_real_; fit$gamma <- .abc_const$gB; fit$pi <- fit$piB; fit$sigma2 <- fit$s2B
+      cset <- unlist(ab$role) > 0
+      abc_tab <- data.table(SNP = si$SNP[unlist(ab$snp)[cset]], Block = rep(names(rows)[run][use], lengths(ab$role))[cset],
+                            set = c("A", "C")[unlist(ab$role)[cset]], z = unlist(ab$z)[cset], beta_std = unlist(fit$coef)[cset])
+    } else {
+      fit <- vi_eigen(w, sqrt(lam), nc / vj, ve = 1, h2p = h2p, threads = threads, tol = tol)
+    }
     message(sprintf("%sLDSC on %d typed SNPs: h2 = %.4f, intercept = %.3f; ve0 = %.3f, kappa = %.4f%s; VI: %d iterations, Vg = %.4f (sd %.4f)",
                     if (K > 1) paste0(tn[t], ": ") else "", length(x$ty), ldsc$h2, ldsc$intercept, vt, kp,
                     if (identical(kappa, "mom")) " (MoM)" else "", fit$iter, fit$Vg, fit$Vg_sd))
+    if (abc) message(sprintf("%sABC: %d A SNPs (annotation, |z| > %g, r2 < %g leads), %d of %d C candidates selected (MCP tau = %g, a = %g); Vg_B = %.4f",
+                             if (K > 1) paste0(tn[t], ": ") else "", fit$nA, .abc_const$zA, .abc_const$r2A, fit$nC, fit$nC_cand,
+                             mcp[[1]], mcp[[2]], fit$Vg_B))
     alpha[[t]] <- rep(list(numeric(0)), length(run))
     alpha[[t]][use] <- split(fit$alpha, rep(seq_along(kb), kb))
     par[[t]] <- list(Vg = fit$Vg, Vg_sd = fit$Vg_sd, ve = vt, kappa = kp, pi = fit$pi, sigma2 = fit$sigma2, gamma = fit$gamma,
@@ -116,6 +152,11 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
                      # eigen-space fit: refit VI or get beta' R beta = sum(lam * alpha^2) without reading LD
                      comp = data.table(Block = rep(names(rows)[run][use], kb), lam = lam, n = nc,
                                        ve = vj, w = w, alpha = fit$alpha))
+    if (abc) {
+      par[[t]]$abc <- abc_tab
+      par[[t]]$abc_fit <- fit[c("Vg_B", "piA", "s2A", "nA", "nC_cand", "nC")]
+      add[[t]] <- abc_tab[beta_std != 0]
+    }
   }
   tm["fit"] <- proc.time()[[3]]
 
@@ -130,6 +171,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     b <- numeric(nrow(si))
     use <- nty[run, t] > 0
     b[unlist(rr[use], use.names = FALSE)] <- unlist(p2[[t]][use], use.names = FALSE)
+    if (!is.null(add[[t]])) { i <- match(add[[t]]$SNP, si$SNP); b[i] <- b[i] + add[[t]]$beta_std }   # beta_A and gamma
     b
   }
   if (K == 1) {
@@ -197,7 +239,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
   z <- b / se
   ty <- which(typed)
   list(ti = lapply(rows, function(r) which(obs[r]) - 1L), z = lapply(rows, function(r) z[r][obs[r]]),
-       n = lapply(rows, function(r) N[r][obs[r]]), nmiss = nmiss, nty = vapply(rows, function(r) sum(obs[r]), 0),
+       n = lapply(rows, function(r) N[r][obs[r]]), typ = lapply(rows, function(r) typed[r][obs[r]]), nmiss = nmiss, nty = vapply(rows, function(r) sum(obs[r]), 0),
        nbar = vapply(rows, function(r) mean(N[r][typed[r]]), 0), scale = scale,
        ty = ty, bh_ty = b[ty] / scale[ty], n_ty = N[ty])
 }
@@ -220,4 +262,33 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
   n <- si$N[i]
   v[i] <- (unlist(lapply(p1, `[[`, "ld"), use.names = FALSE) * (n - 1) - rep(lengths(rr), lengths(rr))) / (n - 2)
   v
+}
+
+# annotation (fixed A set): SNP IDs, or a file whose SNP column (else first column) lists them
+.read_annot <- function(annot, si) {
+  if (is.null(annot)) return(logical(nrow(si)))
+  if (length(annot) == 1 && file.exists(annot)) {
+    a <- fread(annot, header = FALSE, showProgress = FALSE)
+    annot <- if (any(a[1] == "SNP")) a[[which(unlist(a[1]) == "SNP")[1]]][-1] else a[[1]]
+  }
+  isa <- si$SNP %in% annot
+  message(sprintf("Annotation: %d of %d snp.info SNPs", sum(isa), nrow(si)))
+  isa
+}
+
+# one trait's ABC design in the blocks it uses: p1b pass-1 results, cr the union candidate rows (0-based), rr the
+# blocks' snp.info rows. X: k x s candidate columns sqrt(lambda) U[i, ], role, snp (snp.info index), z per column
+.abc_setup <- function(x, p1b, cr, rr, isann) {
+  bi <- match(names(rr), names(x$ti))
+  out <- list(X = list(), role = list(), snp = list(), z = list())
+  for (j in seq_along(p1b)) {
+    tr <- x$cand[[bi[j]]]; q <- match(tr, cr[[j]])
+    zz <- x$z[[bi[j]]][match(tr, x$ti[[bi[j]]])]
+    lam <- p1b[[j]]$lam
+    U <- if (length(q)) p1b[[j]]$urow[q, , drop = FALSE] else matrix(0, 0, length(lam))
+    role <- .abc_roles(U, lam, zz, isann[rr[[j]][tr + 1L]])
+    out$X[[j]] <- t(U) * sqrt(lam); out$role[[j]] <- as.integer(role)
+    out$snp[[j]] <- rr[[j]][tr + 1L]; out$z[[j]] <- zz
+  }
+  out
 }
