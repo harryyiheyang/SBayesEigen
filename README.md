@@ -78,7 +78,13 @@ Rscript $S/run_vi.R ma=ldl.ma,hdl.ma,tg.ma ld=ukbEUR_LD out=prs threads=8
     scaled-inverse-chi-squared prior (4 df) on Vg; h2 is floored at 0.01.
   - Variational EM with SQUAREM. The likelihood is diagonal in the eigen basis, so the
     mean-field posterior is exact. It stops when Vg changes by less than `tol` (1e-4) twice.
-  - ve = 1 by default. With `ve = "ldsc"` it is the LDSC intercept, clamped to [0.9, 2].
+  - Residual variance per eigen component is ve0 + kappa / lambda. A reference LD panel that does
+    not match the GWAS adds noise that grows as lambda shrinks; kappa absorbs it.
+  - With `kappa = "mom"` (the default), ve0 (within [0.9, 1.2]) and kappa (>= 0) come from a moment fit.
+    The fit uses components with lambda < 1 in 100 equal-count bins, with the LDSC signal subtracted.
+    When the LD matches, kappa is about 0.
+  - A numeric `kappa` is used as given, with ve0 = `ve`. `kappa = 0` gives a constant `ve`
+    (default 1, or `"ldsc"` for the LDSC intercept clamped to [0.9, 2]).
 
 ## License
 

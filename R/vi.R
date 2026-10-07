@@ -62,3 +62,30 @@ ldsc_eigen <- function(bhat, l, n, M = length(bhat)) {
   f <- stats::lm.wfit(X, chi2, wt)
   list(intercept = unname(f$coefficients[1]), h2 = unname(f$coefficients[2]))
 }
+
+# LD-mismatch noise per eigen component (Yihe 2026-10-07): var(e_j) = (ve0 + kappa / lambda_j) / n_j.
+# MoM: E[n w^2] = ve0 + kappa / lambda + n lambda tau, tau = h2 / sum(lambda) from LDSC. The signal term is
+# subtracted, components with lambda < lam0 are put in nbin equal-count bins by lambda, and the bin means
+# are regressed on (1, 1/lambda) by weighted least squares (weights 1/fit^2, as LDSC), with
+# ve0 in ve_range and kappa >= 0. Returns ve0, kappa and the number of components used.
+noise_mom <- function(w, lam, n, h2, lam0 = 1, nbin = 100, ve_range = c(0.9, 1.2)) {
+  tau <- h2 / sum(lam)
+  s <- lam < lam0
+  if (sum(s) < 2 * nbin) return(list(ve0 = 1, kappa = 0, n_comp = sum(s)))
+  y <- (n * w^2 - n * lam * tau)[s]; x <- 1 / lam[s]
+  bin <- cut(rank(-x, ties.method = "first"), nbin, labels = FALSE)
+  my <- vapply(split(y, bin), mean, 0); mx <- vapply(split(x, bin), mean, 0)
+  # box-constrained weighted LS for (ve0, kappa): best of the unconstrained solution and the four edges
+  fit2 <- function(wt) {
+    sse <- function(a, k) sum(wt * (my - a - k * mx)^2)
+    kfix <- function(a) max(sum(wt * mx * (my - a)) / sum(wt * mx^2), 0)
+    afix <- function(k) min(max(sum(wt * (my - k * mx)) / sum(wt), ve_range[1]), ve_range[2])
+    f <- stats::lm.wfit(cbind(1, mx), my, wt)$coefficients
+    cand <- list(c(ve_range[1], kfix(ve_range[1])), c(ve_range[2], kfix(ve_range[2])), c(afix(0), 0))
+    if (f[1] >= ve_range[1] && f[1] <= ve_range[2] && f[2] >= 0) cand <- c(cand, list(unname(f)))
+    cand[[which.min(vapply(cand, function(p) sse(p[1], p[2]), 0))]]
+  }
+  p <- fit2(rep(1, nbin))
+  for (it in 1:2) p <- fit2(1 / pmax(p[1] + p[2] * mx, 1e-3)^2)
+  list(ve0 = p[1], kappa = p[2], n_comp = sum(s))
+}

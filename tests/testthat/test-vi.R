@@ -35,3 +35,18 @@ test_that("ldsc_eigen recovers h2 and intercept", {
   expect_equal(r$h2, h2, tolerance = 0.15)
   expect_equal(r$intercept, 1, tolerance = 0.05)
 })
+
+test_that("noise_mom recovers ve0 and kappa and respects the bounds", {
+  set.seed(7)
+  K <- 2e5; lam <- exp(runif(K, log(0.02), log(50))); n <- rep(3e5, K)
+  h2 <- 0.2; tau <- h2 / sum(lam)
+  a <- rnorm(K, 0, sqrt(tau))
+  sim <- function(ve0, kappa) sqrt(lam) * a + rnorm(K, 0, sqrt((ve0 + kappa / lam) / n))
+  m <- SBayesEigen:::noise_mom(sim(1.1, 0.05), lam, n, h2)
+  expect_equal(m$ve0, 1.1, tolerance = 0.03)
+  expect_equal(m$kappa, 0.05, tolerance = 0.15)
+  m0 <- SBayesEigen:::noise_mom(sim(1, 0), lam, n, h2)          # matched LD: kappa ~ 0
+  expect_lt(m0$kappa, 0.005); expect_equal(m0$ve0, 1, tolerance = 0.03)
+  mb <- SBayesEigen:::noise_mom(sim(2, 0.05), lam, n, h2)        # ve0 clamped to 1.2, kappa absorbs some
+  expect_equal(mb$ve0, 1.2); expect_gte(mb$kappa, 0)
+})

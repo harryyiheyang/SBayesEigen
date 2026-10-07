@@ -25,7 +25,12 @@
 #'   timings are for the whole batch. \code{NULL} writes nothing.
 #' @param threads Number of OpenMP threads.
 #' @param ve Residual variance: a number (default 1) or \code{"ldsc"} for the LDSC intercept
-#'   clamped to [0.9, 2].
+#'   clamped to [0.9, 2]. Not used when \code{kappa = "mom"}, which estimates it.
+#' @param kappa LD-mismatch noise: the residual variance of eigen component j is
+#'   \eqn{ve_0 + \kappa / \lambda_j}. \code{"mom"} (default) estimates \eqn{ve_0} (within [0.9, 1.2])
+#'   and \eqn{\kappa \ge 0} by moments on the components with \eqn{\lambda < 1} (100 bins, LDSC
+#'   signal subtracted); a number fixes \eqn{\kappa} with \eqn{ve_0} = \code{ve}; 0 gives the
+#'   constant residual variance \code{ve}.
 #' @param thresh Proportion of eigenvalue mass kept per block.
 #' @param tol VI stops when the posterior genetic variance changes by less than \code{tol}
 #'   (relative) in two consecutive iterations.
@@ -41,17 +46,19 @@
 #' sbayeseigen(c(LDL = "ldl.ma", HDL = "hdl.ma"), "ukbEUR_LD", out = "prs", threads = 8)
 #' }
 #' @export
-sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, thresh = 0.995, tol = 1e-4) {
+sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", thresh = 0.995, tol = 1e-4) {
   # messages still go to the console; with out they are also written to <prefix>.log per trait
   msg <- character(0)
-  r <- withCallingHandlers(.sbayeseigen(ma, ld, out, threads, ve, thresh, tol),
+  r <- withCallingHandlers(.sbayeseigen(ma, ld, out, threads, ve, kappa, thresh, tol),
                            message = function(m) msg <<- c(msg, sub("\n$", "", conditionMessage(m))))
   for (p in attr(r, "prefix")) writeLines(c(format(Sys.time()), msg), paste0(p, ".log"))
   attr(r, "prefix") <- NULL
   invisible(r)
 }
 
-.sbayeseigen <- function(ma, ld, out, threads, ve, thresh, tol) {
+.sbayeseigen <- function(ma, ld, out, threads, ve, kappa, thresh, tol) {
+  if (!identical(kappa, "mom") && !(is.numeric(kappa) && length(kappa) == 1 && kappa >= 0))
+    stop("kappa must be \"mom\" or a number >= 0")
   tm <- c(start = proc.time()[[3]])
   if (is.data.frame(ma)) ma <- list(ma)
   K <- length(ma)
@@ -88,21 +95,27 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, thresh = 0.995,
     lam <- unlist(lapply(p1[use], `[[`, "lam"), use.names = FALSE)
     kb <- lengths(lapply(p1[use], `[[`, "lam"))
     ldsc <- ldsc_eigen(x$bh_ty, lds[x$ty], x$n_ty, M = nrow(si))
-    vt <- if (identical(ve, "ldsc")) min(max(ldsc$intercept, 0.9), 2) else as.numeric(ve)
     h2p <- max(ldsc$h2, 0.01)
-    fit <- vi_eigen(w, sqrt(lam), rep(x$nbar[run][use], kb), ve = vt, h2p = h2p, threads = threads, tol = tol)
-    message(sprintf("%sLDSC on %d typed SNPs: h2 = %.4f, intercept = %.3f; ve = %.3f; VI: %d iterations, Vg = %.4f (sd %.4f)",
-                    if (K > 1) paste0(tn[t], ": ") else "", length(x$ty), ldsc$h2, ldsc$intercept, vt, fit$iter,
-                    fit$Vg, fit$Vg_sd))
+    nc <- rep(x$nbar[run][use], kb)
+    if (identical(kappa, "mom")) {
+      nm <- noise_mom(w, lam, nc, h2p); vt <- nm$ve0; kp <- nm$kappa
+    } else {
+      vt <- if (identical(ve, "ldsc")) min(max(ldsc$intercept, 0.9), 2) else as.numeric(ve); kp <- kappa
+    }
+    vj <- vt + kp / lam   # residual variance per component; VI sees n / vj with ve = 1
+    fit <- vi_eigen(w, sqrt(lam), nc / vj, ve = 1, h2p = h2p, threads = threads, tol = tol)
+    message(sprintf("%sLDSC on %d typed SNPs: h2 = %.4f, intercept = %.3f; ve0 = %.3f, kappa = %.4f%s; VI: %d iterations, Vg = %.4f (sd %.4f)",
+                    if (K > 1) paste0(tn[t], ": ") else "", length(x$ty), ldsc$h2, ldsc$intercept, vt, kp,
+                    if (identical(kappa, "mom")) " (MoM)" else "", fit$iter, fit$Vg, fit$Vg_sd))
     alpha[[t]] <- rep(list(numeric(0)), length(run))
     alpha[[t]][use] <- split(fit$alpha, rep(seq_along(kb), kb))
-    par[[t]] <- list(Vg = fit$Vg, Vg_sd = fit$Vg_sd, ve = vt, pi = fit$pi, sigma2 = fit$sigma2, gamma = fit$gamma,
+    par[[t]] <- list(Vg = fit$Vg, Vg_sd = fit$Vg_sd, ve = vt, kappa = kp, pi = fit$pi, sigma2 = fit$sigma2, gamma = fit$gamma,
                      iter = fit$iter, converged = fit$converged, ldsc = ldsc, h2_prior = h2p,
                      n_snp = nrow(si), n_typed = length(x$ty), n_comp = length(w), n_block = sum(use),
                      time_fit = proc.time()[[3]] - t0,
                      # eigen-space fit: refit VI or get beta' R beta = sum(lam * alpha^2) without reading LD
-                     comp = data.table(Block = rep(names(rows)[run][use], kb), lam = lam, n = rep(x$nbar[run][use], kb),
-                                       w = w, alpha = fit$alpha))
+                     comp = data.table(Block = rep(names(rows)[run][use], kb), lam = lam, n = nc,
+                                       ve = vj, w = w, alpha = fit$alpha))
   }
   tm["fit"] <- proc.time()[[3]]
 
