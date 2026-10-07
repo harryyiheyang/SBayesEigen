@@ -1,9 +1,11 @@
 // Eigen LD builder: per block, correlations straight from PLINK BED or PGEN genotypes
 // (bit-plane popcount kernel from CppMatrix, geno_kernel.h), then a partial symmetric
 // eigendecomposition that only forms the k leading eigenvectors:
-//   dsytrd (tridiagonalise once) -> dsterf (all eigenvalues, O(m^2)) -> k from the
-//   variance cut -> dstemr (k eigenvectors of the tridiagonal) -> dormtr (back-transform).
-// Blocks run in parallel (OpenMP), each block single-threaded, largest blocks first.
+//   dsytrd (tridiagonalise once) -> dstedc (eigenpairs of the tridiagonal) -> k from the
+//   variance cut -> dormtr (back-transform of the k leading vectors).
+// Scheduling: the largest blocks, whose single-threaded cost would set the wall time, run one at a time with
+// all threads (correlation kernel and BLAS); the rest run in parallel, one thread each, under an optional
+// memory cap. Largest blocks first.
 // Output: SBayesRC blockN.eigen.bin (int32 m, int32 k, float sumLambda, float thresh,
 // float lambda[k], float U[m*k]) plus per-SNP frequency, N and unbiased LD scores.
 // With a fixed SNP set A (AB mode) each block is written as blockN.ab.bin instead: R_AA kept, B eigen-
@@ -21,17 +23,16 @@
 #include <numeric>
 #include <string>
 #include <vector>
+#include <mutex>
+#include <condition_variable>
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#endif
 #include "geno_kernel.h"
 #include "pgenlib/pgenlib_read.h"
 #ifndef FCONE
 #define FCONE
 #endif
-
-extern "C" void F77_NAME(dstemr)(const char* jobz, const char* range, const int* n, double* d, double* e,
-                                 const double* vl, const double* vu, const int* il, const int* iu, int* m,
-                                 double* w, double* z, const int* ldz, const int* nzc, int* isuppz,
-                                 int* tryrac, double* work, const int* lwork, int* iwork, const int* liwork,
-                                 int* info FCLEN FCLEN);
 
 namespace {
 
@@ -149,7 +150,9 @@ struct BlockOut {
 
 // k leading eigenpairs of the symmetric m x m matrix A (lower triangle used, overwritten): lam = all
 // eigenvalues descending, sl = sum of the positive ones, k = first count reaching cut * sl, Z = m x k
-// eigenvectors in ascending order (column k - 1 is the largest).
+// eigenvectors in ascending order (column k - 1 is the largest). The tridiagonal is solved by divide and
+// conquer (dstedc, all m vectors, BLAS-3 and so threaded with the BLAS); with cut 0.995 k is close to m, where
+// this is far faster than MRRR for k vectors. Peak memory 24 m^2 bytes (A, Z and the dstedc workspace).
 bool top_eigen(std::vector<double>& A, int m, double cut, std::vector<double>& lam, std::vector<double>& Z, int& k,
                double& sl, std::string& error) {
   int info = 0, lwork = -1;
@@ -160,11 +163,20 @@ bool top_eigen(std::vector<double>& A, int m, double cut, std::vector<double>& l
   std::vector<double> work(std::max(lwork, 1));
   F77_CALL(dsytrd)("L", &m, A.data(), &m, d.data(), e.data(), tau.data(), work.data(), &lwork, &info FCONE);
   if (info) { error = "dsytrd failed"; return false; }
-  lam = d;
-  std::vector<double> e2(e);
-  F77_CALL(dsterf)(&m, lam.data(), e2.data(), &info);
-  if (info) { error = "dsterf failed"; return false; }
-  std::reverse(lam.begin(), lam.end());   // descending
+  std::vector<double>().swap(work);
+  // all eigenpairs of the tridiagonal, ascending
+  Z.assign(static_cast<std::size_t>(m) * m, 0);
+  {
+    int liwork = -1, iwq;
+    lwork = -1;
+    F77_CALL(dstedc)("I", &m, d.data(), e.data(), Z.data(), &m, &wq, &lwork, &iwq, &liwork, &info FCONE);
+    lwork = static_cast<int>(wq); liwork = iwq;
+    std::vector<double> w(std::max(lwork, 1));
+    std::vector<int> iw(std::max(liwork, 1));
+    F77_CALL(dstedc)("I", &m, d.data(), e.data(), Z.data(), &m, w.data(), &lwork, iw.data(), &liwork, &info FCONE);
+    if (info) { error = "dstedc failed"; return false; }
+  }
+  lam.assign(d.rbegin(), d.rend());   // descending
   int np = 0;
   sl = 0;
   while (np < m && lam[np] > 0) sl += lam[np++];
@@ -172,23 +184,10 @@ bool top_eigen(std::vector<double>& A, int m, double cut, std::vector<double>& l
   k = np;
   for (int j = 0; j < np; ++j) { cs += lam[j]; if (cs >= cut * sl) { k = j + 1; break; } }
   if (k < 1) { error = "no positive eigenvalues"; return false; }
-  // k leading eigenvectors of the tridiagonal (dstemr returns ascending order)
-  const int il = m - k + 1, iu = m, nzc = k;
-  int mfound = 0, tryrac = 1, liwork = -1;
-  lwork = -1;
-  std::vector<double> w(m), dd(d), ee(e);
-  Z.assign(static_cast<std::size_t>(m) * k, 0);
-  std::vector<int> isuppz(2 * static_cast<std::size_t>(k));
-  int iwq;
-  const double vl = 0, vu = 0;
-  F77_CALL(dstemr)("V", "I", &m, dd.data(), ee.data(), &vl, &vu, &il, &iu, &mfound, w.data(), Z.data(), &m,
-                   &nzc, isuppz.data(), &tryrac, &wq, &lwork, &iwq, &liwork, &info FCONE FCONE);
-  lwork = static_cast<int>(wq); liwork = iwq;
-  work.assign(std::max(lwork, 1), 0);
-  std::vector<int> iwork(std::max(liwork, 1));
-  F77_CALL(dstemr)("V", "I", &m, dd.data(), ee.data(), &vl, &vu, &il, &iu, &mfound, w.data(), Z.data(), &m,
-                   &nzc, isuppz.data(), &tryrac, work.data(), &lwork, iwork.data(), &liwork, &info FCONE FCONE);
-  if (info || mfound != k) { error = "dstemr failed"; return false; }
+  // keep the k leading vectors (the last k columns), still ascending
+  const std::size_t off = static_cast<std::size_t>(m - k) * m;
+  if (off) std::copy(Z.begin() + off, Z.end(), Z.begin());
+  Z.resize(static_cast<std::size_t>(m) * k);
   // back-transform: Z = Q Z
   lwork = -1;
   F77_CALL(dormtr)("L", "L", "N", &m, &k, A.data(), &m, tau.data(), Z.data(), &m, &wq, &lwork, &info
@@ -265,22 +264,15 @@ void ab_block(std::vector<double>& R, int m, const std::vector<int>& a_kept, dou
   }
   std::vector<double>().swap(R);
   res.k = k; res.sumLambda = sl;
-  // UlB, descending columns
-  std::vector<float> Ul(static_cast<std::size_t>(m) * k);
-  std::vector<double> Q2(static_cast<std::size_t>(mB) * k);
-  for (int c = 0; c < k; ++c) {
-    const double* z = Z.data() + static_cast<std::size_t>(k - 1 - c) * mB;
-    std::copy(z, z + mB, Q2.data() + static_cast<std::size_t>(c) * mB);
-    for (int r = 0; r < mB; ++r) Ul[static_cast<std::size_t>(c) * m + iB[r]] = static_cast<float>(z[r]);
-  }
+  // A rows of UlB: -H G' Q2, computed on the ascending columns of Z (column c of UlB is column k - 1 - c)
+  std::vector<double> UA;
   if (rankA > 0 && k > 0) {
-    std::vector<double> T(static_cast<std::size_t>(rankA) * k), UA(static_cast<std::size_t>(mA) * k);
-    F77_CALL(dgemm)("T", "N", &rankA, &k, &mB, &one, G.data(), &mB, Q2.data(), &mB, &zero, T.data(), &rankA
+    std::vector<double> T(static_cast<std::size_t>(rankA) * k);
+    UA.resize(static_cast<std::size_t>(mA) * k);
+    F77_CALL(dgemm)("T", "N", &rankA, &k, &mB, &one, G.data(), &mB, Z.data(), &mB, &zero, T.data(), &rankA
                     FCONE FCONE);
     F77_CALL(dgemm)("N", "N", &mA, &k, &rankA, &mone, H.data(), &mA, T.data(), &rankA, &zero, UA.data(), &mA
                     FCONE FCONE);
-    for (int c = 0; c < k; ++c)
-      for (int r = 0; r < mA; ++r) Ul[static_cast<std::size_t>(c) * m + iA[r]] = static_cast<float>(UA[static_cast<std::size_t>(c) * mA + r]);
   }
   std::FILE* fp = std::fopen(out_file.c_str(), "wb");
   if (!fp) { res.error = "cannot write " + out_file; return; }
@@ -293,15 +285,24 @@ void ab_block(std::vector<double>& R, int m, const std::vector<int>& a_kept, dou
   bool ok = std::fwrite(hdr, 4, 4, fp) == 4 && std::fwrite(fh, 4, 3, fp) == 3 &&
             std::fwrite(iA.data(), 4, mA, fp) == static_cast<std::size_t>(mA) &&
             std::fwrite(up.data(), 4, up.size(), fp) == up.size() &&
-            std::fwrite(lk.data(), 4, k, fp) == static_cast<std::size_t>(k) &&
-            std::fwrite(Ul.data(), 4, Ul.size(), fp) == Ul.size() &&
-            std::fwrite(rba.data(), 4, rba.size(), fp) == rba.size();
+            std::fwrite(lk.data(), 4, k, fp) == static_cast<std::size_t>(k);
+  // UlB, descending columns, one column at a time
+  std::vector<float> col(m, 0.0f);
+  for (int c = 0; ok && c < k; ++c) {
+    const std::size_t zc = static_cast<std::size_t>(k - 1 - c);
+    const double* z = Z.data() + zc * mB;
+    for (int r = 0; r < mB; ++r) col[iB[r]] = static_cast<float>(z[r]);
+    if (!UA.empty()) for (int r = 0; r < mA; ++r) col[iA[r]] = static_cast<float>(UA[zc * mA + r]);
+    ok = std::fwrite(col.data(), 4, m, fp) == static_cast<std::size_t>(m);
+  }
+  ok = ok && std::fwrite(rba.data(), 4, rba.size(), fp) == rba.size();
   ok = (std::fclose(fp) == 0) && ok;
   if (!ok) res.error = "write failed: " + out_file;
 }
 
 void eigen_block(Source& src, const std::array<int, 4>& code, std::size_t n, const std::vector<int>& idx,
-                 const std::vector<int>& isA, const std::string& out_file, double cut, double tolA, BlockOut& res) {
+                 const std::vector<int>& isA, const std::string& out_file, double cut, double tolA, int threads,
+                 BlockOut& res) {
   const std::size_t m0 = idx.size(), stride = (n + 3) / 4;
   static const NibbleTable bed_tab(kBedCode), pgen_tab(kPgenCode);
   const NibbleTable& tab = (code == kBedCode) ? bed_tab : pgen_tab;
@@ -349,7 +350,7 @@ void eigen_block(Source& src, const std::array<int, 4>& code, std::size_t n, con
   // R (m x m, column-major, both triangles)
   std::vector<double> A(static_cast<std::size_t>(m) * m);
   static const TileKernel kernel = select_kernel();
-  cor_block(P, 0, m, P, 0, m, true, static_cast<double>(n), A.data(), m, 1, kernel);
+  cor_block(P, 0, m, P, 0, m, true, static_cast<double>(n), A.data(), m, threads, kernel);
   Planes().bits.swap(P.bits);
   // LD scores, unbiased for the population r^2: sum_j [r2 - (1 - r2) / (n - 2)]
   res.ld.assign(m, 0);
@@ -380,34 +381,78 @@ void eigen_block(Source& src, const std::array<int, 4>& code, std::size_t n, con
   for (int j = 0; j < k; ++j) sumD2 += lam[j] * lam[j];
   res.relerr = std::sqrt(std::max(sumR2 - sumD2, 0.0) / sumR2);
   std::vector<double>().swap(A);
-  // write descending: column c of U is column k - 1 - c of Z
-  std::vector<float> buf(static_cast<std::size_t>(m) * k);
-  for (int c = 0; c < k; ++c) {
-    const double* z = Z.data() + static_cast<std::size_t>(k - 1 - c) * m;
-    float* u = buf.data() + static_cast<std::size_t>(c) * m;
-    for (int i = 0; i < m; ++i) u[i] = static_cast<float>(z[i]);
-  }
   std::FILE* fp = std::fopen(out_file.c_str(), "wb");
   if (!fp) { res.error = "cannot write " + out_file; return; }
   const int32_t hdr[2] = {m, k};
   const float fh[2] = {static_cast<float>(sl), static_cast<float>(cut)};
   std::vector<float> lk(lam.begin(), lam.begin() + k);
   bool ok = std::fwrite(hdr, 4, 2, fp) == 2 && std::fwrite(fh, 4, 2, fp) == 2 &&
-            std::fwrite(lk.data(), 4, k, fp) == static_cast<std::size_t>(k) &&
-            std::fwrite(buf.data(), 4, buf.size(), fp) == buf.size();
+            std::fwrite(lk.data(), 4, k, fp) == static_cast<std::size_t>(k);
+  // U descending, one column at a time: column c of U is column k - 1 - c of Z
+  std::vector<float> ucol(m);
+  for (int c = 0; ok && c < k; ++c) {
+    const double* z = Z.data() + static_cast<std::size_t>(k - 1 - c) * m;
+    for (int i = 0; i < m; ++i) ucol[i] = static_cast<float>(z[i]);
+    ok = std::fwrite(ucol.data(), 4, m, fp) == static_cast<std::size_t>(m);
+  }
   ok = (std::fclose(fp) == 0) && ok;
   if (!ok) res.error = "write failed: " + out_file;
 }
+
+// BLAS thread count, set at run time through whichever control the loaded BLAS exports (OpenBLAS, MKL,
+// FlexiBLAS); without one (reference BLAS) the BLAS stays single-threaded. Restored on exit.
+struct BlasThreads {
+  void (*set)(int) = nullptr;
+  int orig = 0;
+  BlasThreads() {
+#if !defined(_WIN32)
+    const char* sets[] = {"openblas_set_num_threads", "MKL_Set_Num_Threads", "flexiblas_set_num_threads"};
+    const char* gets[] = {"openblas_get_num_threads", "MKL_Get_Max_Threads", "flexiblas_get_num_threads"};
+    for (int i = 0; i < 3 && !set; ++i) {
+      set = reinterpret_cast<void (*)(int)>(dlsym(RTLD_DEFAULT, sets[i]));
+      if (set) {
+        int (*get)() = reinterpret_cast<int (*)()>(dlsym(RTLD_DEFAULT, gets[i]));
+        orig = get ? get() : 0;
+      }
+    }
+#endif
+  }
+  void operator()(int t) const { if (set) set(t); }
+  ~BlasThreads() { if (set && orig > 0) set(orig); }
+};
+
+// bytes a block of m variants holds at its peak (R, the tridiagonal's vectors and the dstedc workspace)
+double block_bytes(double m) { return 24 * m * m; }
+
+// blocks running in parallel wait here until their peak memory fits under the cap (one always runs)
+struct MemGate {
+  double cap, used = 0;
+  std::mutex mu;
+  std::condition_variable cv;
+  explicit MemGate(double c) : cap(c) {}
+  void acquire(double b) {
+    if (cap <= 0) return;
+    std::unique_lock<std::mutex> lk(mu);
+    cv.wait(lk, [&] { return used == 0 || used + b <= cap; });
+    used += b;
+  }
+  void release(double b) {
+    if (cap <= 0) return;
+    { std::lock_guard<std::mutex> lk(mu); used -= b; }
+    cv.notify_all();
+  }
+};
 
 } // namespace
 
 // geno: path to .bed or .pgen; blocks: list of 0-based variant indices (file order);
 // out_files: one eigen.bin per block; allele_ct: per-variant allele counts (PGEN only).
 // a_mask: empty list (eigen.bin) or, per block, 0/1 per variant of `blocks` marking set A (ab.bin).
+// mem: memory cap in bytes for the blocks in flight (0 = none).
 // [[Rcpp::export]]
 Rcpp::List ld_build_cpp(std::string geno, bool pgen, int n_samples, Rcpp::IntegerVector allele_ct,
                         Rcpp::List blocks, Rcpp::CharacterVector out_files, double cut, int threads,
-                        Rcpp::List a_mask, double tolA) {
+                        Rcpp::List a_mask, double tolA, double mem) {
   const int nb = blocks.size();
   std::vector<std::vector<int>> idx(nb), isA(nb);
   std::vector<std::string> outs(nb);
@@ -423,7 +468,7 @@ Rcpp::List ld_build_cpp(std::string geno, bool pgen, int n_samples, Rcpp::Intege
   }
   const std::size_t n = static_cast<std::size_t>(n_samples);
 #ifdef _OPENMP
-  threads = std::max(1, std::min(threads, nb));
+  threads = std::max(1, threads);
 #else
   threads = 1;
 #endif
@@ -447,25 +492,47 @@ Rcpp::List ld_build_cpp(std::string geno, bool pgen, int n_samples, Rcpp::Intege
   std::vector<int> order(nb);
   std::iota(order.begin(), order.end(), 0);
   std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return idx[a].size() > idx[b].size(); });
+  // serial part: a block runs alone with all threads while its O(m^3) cost exceeds an equal share of what is
+  // left (only when the BLAS can be threaded), or while `threads` copies of it would not fit under the memory cap
+  const BlasThreads blas;
+  double left = 0;
+  for (int b = 0; b < nb; ++b) left += std::pow(static_cast<double>(idx[b].size()), 3);
+  int nbig = 0;
+  if (threads > 1)
+    for (; nbig < nb; ++nbig) {
+      const double m = static_cast<double>(idx[order[nbig]].size()), c = m * m * m;
+      if (!((blas.set && c > left / threads) || (mem > 0 && threads * block_bytes(m) > mem))) break;
+      left -= c;
+    }
   std::vector<BlockOut> res(nb);
   const std::array<int, 4>& code = pgen ? kPgenCode : kBedCode;
+  auto run = [&](int b, Source& s, int nt) {
+    try {
+      eigen_block(s, code, n, idx[b], isA[b], outs[b], cut, tolA, nt, res[b]);
+    } catch (const std::exception& ex) {
+      res[b].error = ex.what();
+    } catch (...) {
+      res[b].error = "unknown C++ error";
+    }
+  };
+  blas(threads);
+  for (int o = 0; o < nbig; ++o) run(order[o], *src[0], threads);
+  blas(1);
+  MemGate gate(mem);
 #ifdef _OPENMP
-  #pragma omp parallel for num_threads(threads) schedule(dynamic, 1)
+  #pragma omp parallel for num_threads(std::max(1, std::min(threads, nb - nbig))) schedule(dynamic, 1)
 #endif
-  for (int o = 0; o < nb; ++o) {
+  for (int o = nbig; o < nb; ++o) {
     const int b = order[o];
 #ifdef _OPENMP
     Source& s = *src[omp_get_thread_num()];
 #else
     Source& s = *src[0];
 #endif
-    try {
-      eigen_block(s, code, n, idx[b], isA[b], outs[b], cut, tolA, res[b]);
-    } catch (const std::exception& ex) {
-      res[b].error = ex.what();
-    } catch (...) {
-      res[b].error = "unknown C++ error";
-    }
+    const double need = block_bytes(static_cast<double>(idx[b].size()));
+    gate.acquire(need);
+    run(b, s, 1);
+    gate.release(need);
   }
   Rcpp::List out(nb);
   for (int b = 0; b < nb; ++b) {

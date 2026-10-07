@@ -21,8 +21,8 @@ ab_pass1_cpp <- function(files, typed_index, z, n_typed, n_missing, rows, thread
     .Call(`_SBayesEigen_ab_pass1_cpp`, files, typed_index, z, n_typed, n_missing, rows, threads)
 }
 
-ld_build_cpp <- function(geno, pgen, n_samples, allele_ct, blocks, out_files, cut, threads, a_mask, tolA) {
-    .Call(`_SBayesEigen_ld_build_cpp`, geno, pgen, n_samples, allele_ct, blocks, out_files, cut, threads, a_mask, tolA)
+ld_build_cpp <- function(geno, pgen, n_samples, allele_ct, blocks, out_files, cut, threads, a_mask, tolA, mem) {
+    .Call(`_SBayesEigen_ld_build_cpp`, geno, pgen, n_samples, allele_ct, blocks, out_files, cut, threads, a_mask, tolA, mem)
 }
 
 tidy_cpp <- function(mafile, snpinfo, output, freq_thresh, N_sd_range, rate2pq, want_strings, threads) {

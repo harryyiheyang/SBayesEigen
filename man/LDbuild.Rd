@@ -13,7 +13,8 @@ LDbuild(
   blockRef = NULL,
   minsnp = 100,
   A = NULL,
-  tolA = 1e-12
+  tolA = 1e-12,
+  mem = NULL
 )
 }
 \arguments{
@@ -28,9 +29,9 @@ formats exist. PGEN needs a plain-text \code{.pvar}.}
 \item{thresh}{Proportion of the positive eigenvalue mass kept per block (of the Schur complement of A in
 AB mode).}
 
-\item{threads}{Blocks processed in parallel (each block single-threaded; with a threaded
-OpenBLAS set \code{OPENBLAS_NUM_THREADS=1}). Memory per thread is about
-\eqn{8 m^2 (1 + k/m)} bytes for the largest block of \eqn{m} SNPs.}
+\item{threads}{Threads. The largest blocks, whose single-threaded cost would set the wall time, run one at a
+time on all threads (correlation kernel and, with OpenBLAS, MKL or FlexiBLAS, the LAPACK steps; the BLAS
+thread count is set internally and restored); the other blocks run in parallel, one thread each.}
 
 \item{snps}{Optional SNP filter: a character vector of IDs, or a file with an ID per
 line or with columns SNP, A1, A2 (e.g. a GWAS \code{.ma} file; alleles must then
@@ -52,6 +53,10 @@ above \code{tolA} times the largest), and \eqn{R_{BA}}, so that R can be rebuilt
 \code{read_ab()} in the package source for the layout.}
 
 \item{tolA}{Relative eigenvalue cut of the generalized inverse of \eqn{R_{AA}}.}
+
+\item{mem}{Memory cap in GB for the blocks in flight; a block of \eqn{m} SNPs needs about \eqn{24 m^2}
+bytes at its peak. Default: 80\% of the smallest of physical memory, the cgroup limit (e.g. a Slurm
+allocation) and \code{SLURM_MEM_PER_NODE}. \code{Inf} turns the cap off.}
 }
 \value{
 Invisibly, the \code{eigen.info} table. Writes \code{block<b>.eigen.bin},

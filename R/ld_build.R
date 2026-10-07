@@ -30,9 +30,12 @@
 #'   above \code{tolA} times the largest), and \eqn{R_{BA}}, so that R can be rebuilt; see
 #'   \code{read_ab()} in the package source for the layout.
 #' @param tolA Relative eigenvalue cut of the generalized inverse of \eqn{R_{AA}}.
-#' @param threads Blocks processed in parallel (each block single-threaded; with a threaded
-#'   OpenBLAS set \code{OPENBLAS_NUM_THREADS=1}). Memory per thread is about
-#'   \eqn{8 m^2 (1 + k/m)} bytes for the largest block of \eqn{m} SNPs.
+#' @param threads Threads. The largest blocks, whose single-threaded cost would set the wall time, run one at a
+#'   time on all threads (correlation kernel and, with OpenBLAS, MKL or FlexiBLAS, the LAPACK steps; the BLAS
+#'   thread count is set internally and restored); the other blocks run in parallel, one thread each.
+#' @param mem Memory cap in GB for the blocks in flight; a block of \eqn{m} SNPs needs about \eqn{24 m^2}
+#'   bytes at its peak. Default: 80\% of the smallest of physical memory, the cgroup limit (e.g. a Slurm
+#'   allocation) and \code{SLURM_MEM_PER_NODE}. \code{Inf} turns the cap off.
 #' @return Invisibly, the \code{eigen.info} table. Writes \code{block<b>.eigen.bin},
 #'   \code{snp.info}, \code{ldm.info}, \code{ldscore.txt} and \code{eigen.info}.
 #'   \code{ldscore.txt} holds one column, the LD score unbiased for the population
@@ -47,7 +50,7 @@
 #' }
 #' @export
 LDbuild <- function(geno, out, thresh = 0.995, threads = 4, snps = NULL, blockRef = NULL, minsnp = 100,
-                    A = NULL, tolA = 1e-12) {
+                    A = NULL, tolA = 1e-12, mem = NULL) {
   t0 <- proc.time()[[3]]
   if (is.null(blockRef)) blockRef <- system.file("extdata", "ref4cM_v37.pos", package = "SBayesEigen")
   pos <- .read_blocks(blockRef)
@@ -90,8 +93,12 @@ LDbuild <- function(geno, out, thresh = 0.995, threads = 4, snps = NULL, blockRe
   bl <- v[, .(m = .N), by = .(Block, file)]
   if (anyDuplicated(bl$Block)) stop("a block spans several genotype files")
   mx <- max(bl$m)
+  if (is.null(mem)) mem <- 0.8 * .mem_limit() / 2^30
+  peak <- 24 * mx^2 / 2^30
   message(nrow(v), " variants in ", nrow(bl), " blocks (largest m = ", mx, "), ", threads, " threads, ",
-          "about ", format(signif(threads * 16 * mx^2 / 2^30, 2)), " GB peak memory")
+          "memory cap ", if (is.finite(mem)) paste(format(signif(mem, 3)), "GB") else "none",
+          " (largest block about ", format(signif(peak, 2)), " GB)")
+  if (is.finite(mem) && peak > mem) warning("the largest block needs about ", signif(peak, 2), " GB, above mem")
 
   # ---- per file: LD, eigen, write blocks ----
   if (length(list.files(out, pattern = "^block\\d+\\.(eigen|ab)\\.bin$")))
@@ -106,7 +113,7 @@ LDbuild <- function(geno, out, thresh = 0.995, threads = 4, snps = NULL, blockRe
     outs <- file.path(out, paste0("block", bl$Block[ib], if (ab) ".ab.bin" else ".eigen.bin"))
     tf <- proc.time()[[3]]
     res[ib] <- ld_build_cpp(gf$path[f], gf$type[f] == "pgen", gf$n[f], vl[[f]]$nallele, idx, outs,
-                            thresh, threads, am, tolA)
+                            thresh, threads, am, tolA, if (is.finite(mem)) mem * 2^30 else 0)
     message(sprintf("  %s: %d blocks, %.1f s", basename(gf$prefix[f]), length(ib), proc.time()[[3]] - tf))
   }
 
@@ -130,6 +137,34 @@ LDbuild <- function(geno, out, thresh = 0.995, threads = 4, snps = NULL, blockRe
   message(sprintf("LD reference written to %s (%d SNPs, %d blocks) in %.1f s", out, nrow(v), nrow(einfo),
                   proc.time()[[3]] - t0))
   invisible(einfo)
+}
+
+# memory available to this process in bytes: physical memory, the cgroup (v2 or v1) limit and a Slurm
+# allocation, whichever is smallest; Inf when none can be read
+.mem_limit <- function() {
+  rd <- function(f) {
+    x <- suppressWarnings(tryCatch(as.numeric(readLines(f, n = 1, warn = FALSE)), error = function(e) NA))
+    if (length(x) == 1 && is.finite(x) && x > 0 && x < 2^60) x else Inf
+  }
+  lim <- Inf
+  if (file.exists("/proc/meminfo")) {
+    mi <- readLines("/proc/meminfo", warn = FALSE)
+    tot <- suppressWarnings(as.numeric(sub("^MemTotal:\\s+(\\d+) kB.*", "\\1", grep("^MemTotal:", mi, value = TRUE))))
+    if (length(tot) == 1 && is.finite(tot)) lim <- tot * 1024
+  }
+  if (file.exists("/proc/self/cgroup")) {
+    for (l in readLines("/proc/self/cgroup", warn = FALSE)) {
+      f <- strsplit(l, ":", fixed = TRUE)[[1]]
+      if (length(f) < 3) next
+      path <- paste(f[-(1:2)], collapse = ":")
+      if (f[1] == "0" && f[2] == "") lim <- min(lim, rd(file.path("/sys/fs/cgroup", path, "memory.max")))
+      if ("memory" %in% strsplit(f[2], ",", fixed = TRUE)[[1]])
+        lim <- min(lim, rd(file.path("/sys/fs/cgroup/memory", path, "memory.limit_in_bytes")))
+    }
+  }
+  sl <- suppressWarnings(as.numeric(Sys.getenv("SLURM_MEM_PER_NODE")))
+  if (is.finite(sl) && sl > 0) lim <- min(lim, sl * 2^20)
+  lim
 }
 
 # block definitions: Block, Chrom, StartBP, EndBP (autosomes, sorted); also a chr/start/stop interval file
