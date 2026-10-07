@@ -94,7 +94,31 @@ inline const char* line_end(const std::string& s, size_t start) {
   return nl ? static_cast<const char*>(nl) : s.data() + s.size();
 }
 
+#if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
+#include <charconv>
+#define SBE_FROM_CHARS 1
+#endif
+
+// number or NAN; std::from_chars (correctly rounded, same values as strtod, several times faster) when the
+// library has floating-point from_chars, else strtod
 inline double num(std::string_view v) {
+#ifdef SBE_FROM_CHARS
+  if (v.empty()) return NAN;
+  const char* p = v.data();
+  const char* e = p + v.size();
+  if (*p == '+') ++p;
+  double x;
+  const auto r = std::from_chars(p, e, x);
+  if (r.ec == std::errc() && r.ptr == e) return x;
+  if (r.ec == std::errc::result_out_of_range && r.ptr == e) {   // strtod gives +-HUGE_VAL or a denormal/0
+    char buf[64];
+    if (v.size() >= sizeof buf) return NAN;
+    std::memcpy(buf, v.data(), v.size());
+    buf[v.size()] = '\0';
+    return std::strtod(buf, nullptr);
+  }
+  return NAN;
+#endif
   char buf[64];
   if (v.empty() || v.size() >= sizeof buf) return NAN;
   std::memcpy(buf, v.data(), v.size());

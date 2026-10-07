@@ -59,28 +59,46 @@ impute <- function(ma, ld, out = NULL, threads = 4) {
 .is_imputed <- function(ma, si) "r2" %in% names(ma) && nrow(ma) == nrow(si)
 
 # snp.info row indices per block, blocks in snp.info order
-.block_rows <- function(si) split(seq_len(nrow(si)), factor(si$Block, levels = unique(si$Block)))
+.block_rows <- function(si) {
+  r <- rle(si$Block)
+  if (anyDuplicated(r$values)) return(split(seq_len(nrow(si)), factor(si$Block, levels = unique(si$Block))))
+  e <- cumsum(r$lengths)
+  stats::setNames(Map(seq.int, e - r$lengths + 1L, e), as.character(r$values))
+}
 
 # summary data aligned to snp.info (alleles flipped to snp.info A1): one row per snp.info SNP, b/se/p NA
 # where missing, N filled with the median; vp = median var(y) estimate, Nmed = median N
 .align <- function(ma, si) {
   cols <- c("SNP", "A1", "A2", "freq", "b", "se", "p", "N")
+  if (!is.null(ma$idx) && !is.null(ma$flip)) return(.align_idx(ma, si))
   if (!all(cols %in% names(ma))) stop("missing columns in the summary data: ", paste(setdiff(cols, names(ma)), collapse = ", "))
-  vp <- stats::median(2 * ma$freq * (1 - ma$freq) * (ma$N * ma$se^2 + ma$b^2), na.rm = TRUE)
-  Nmed <- stats::median(ma$N, na.rm = TRUE)
-  if (!is.finite(vp) || !is.finite(Nmed)) stop("cannot compute a finite median var(y) or N from the summary data")
-  m <- match(ma$SNP, si$SNP)
+  m <- chmatch(as.character(ma$SNP), si$SNP)
   i <- which(!is.na(m)); j <- m[i]
   same <- ma$A1[i] == si$A1[j] & ma$A2[i] == si$A2[j]
   flip <- ma$A1[i] == si$A2[j] & ma$A2[i] == si$A1[j]
   message(length(i), " SNPs in common between the summary data and LD; ", sum(same), " as is, ",
           sum(flip), " with flipped alleles")
-  res <- data.table(SNP = si$SNP, A1 = si$A1, A2 = si$A2, freq = si$freq, b = NA_real_, se = NA_real_,
-                    p = NA_real_, N = NA_real_)
-  k <- i[same | flip]; s <- ifelse(flip[same | flip], -1, 1)
-  set(res, j[same | flip], c("freq", "b", "se", "p", "N"),
-      list(ifelse(s < 0, 1 - ma$freq[k], ma$freq[k]), s * ma$b[k], ma$se[k], ma$p[k], ma$N[k]))
-  res[!is.finite(b) | !is.finite(se), `:=`(b = NA_real_, se = NA_real_)]
-  res[is.na(N), N := Nmed]
+  k <- same | flip
+  .align_rows(si, i[k], j[k], flip[k], ma$freq, ma$b, ma$se, ma$p, ma$N)
+}
+
+# from .tidy(idx = TRUE): snp.info rows and flips are known, no ID matching
+.align_idx <- function(tb, si) {
+  message(nrow(tb), " SNPs in common between the summary data and LD; ", sum(!tb$flip), " as is, ",
+          sum(tb$flip), " with flipped alleles")
+  .align_rows(si, seq_len(nrow(tb)), tb$idx, tb$flip, tb$freq, tb$b, tb$se, tb$p, tb$N)
+}
+
+# summary rows k -> snp.info rows j (flip: alleles swapped); vp and Nmed from all input rows
+.align_rows <- function(si, k, j, flip, freq, b, se, p, N) {
+  vp <- stats::median(2 * freq * (1 - freq) * (N * se^2 + b^2), na.rm = TRUE)
+  Nmed <- stats::median(N, na.rm = TRUE)
+  if (!is.finite(vp) || !is.finite(Nmed)) stop("cannot compute a finite median var(y) or N from the summary data")
+  n <- nrow(si); s <- 1 - 2 * flip
+  fb <- si$freq; bb <- rep(NA_real_, n); sb <- bb; pb <- bb; Nb <- rep(Nmed, n)
+  fb[j] <- flip + s * freq[k]; bb[j] <- s * b[k]; sb[j] <- se[k]; pb[j] <- p[k]; Nb[j] <- N[k]
+  bad <- !is.finite(bb) | !is.finite(sb); bb[bad] <- NA_real_; sb[bad] <- NA_real_
+  Nb[is.na(Nb)] <- Nmed
+  res <- setDT(list(SNP = si$SNP, A1 = si$A1, A2 = si$A2, freq = fb, b = bb, se = sb, p = pb, N = Nb))
   list(res = res, vp = vp, Nmed = Nmed)
 }

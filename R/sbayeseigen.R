@@ -230,7 +230,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     scale <- sqrt(N * se^2 + b^2)
     nmiss <- stats::median(N)
   } else {
-    a <- .align(.tidy(x, ld, si = si), si)
+    a <- .align(.tidy(x, ld, si = si, idx = TRUE), si)
     b <- a$res$b; se <- a$res$se; N <- a$res$N; f <- a$res$freq
     obs <- typed <- is.finite(b)
     scale <- ifelse(obs, sqrt(N * se^2 + b^2), sqrt(a$vp / (2 * f * (1 - f))))

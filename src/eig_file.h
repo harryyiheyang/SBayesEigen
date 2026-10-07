@@ -66,6 +66,13 @@ struct EigFile {
     lam = reinterpret_cast<const float*>(base_ + 16);
     U = lam + kf;
     k = eig_cut(lam, kf, hf[0], hf[1], thresh);
+#ifndef _WIN32
+    // ask the kernel to read the used prefix (header, lambda, first k columns) ahead in large requests;
+    // matters on network file systems, where 4 KB page faults leave the CPUs waiting
+    const size_t need = 16 + 4 * static_cast<size_t>(kf) + 4 * static_cast<size_t>(m) * k;
+    madvise(const_cast<char*>(base_), len_, MADV_SEQUENTIAL);
+    madvise(const_cast<char*>(base_), need, MADV_WILLNEED);
+#endif
     return true;
   }
   ~EigFile() {

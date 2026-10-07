@@ -21,8 +21,9 @@ tidy <- function(ma, ld, out = NULL, freq_thresh = 0.2, N_sd_range = 3, rate2pq 
   .tidy(ma, ld, out, freq_thresh, N_sd_range, rate2pq)
 }
 
-# si: standardised snp.info (.std_snpinfo) already in memory; its strings are reused
-.tidy <- function(ma, ld, out = NULL, freq_thresh = 0.2, N_sd_range = 3, rate2pq = 0.5, si = NULL) {
+# si: standardised snp.info (.std_snpinfo) already in memory; its strings are reused. idx = TRUE (C++ path
+# only) also returns the snp.info row (idx) and allele flip of each SNP, so .align can skip matching IDs.
+.tidy <- function(ma, ld, out = NULL, freq_thresh = 0.2, N_sd_range = 3, rate2pq = 0.5, si = NULL, idx = FALSE) {
   cols <- c("SNP", "A1", "A2", "freq", "b", "se", "p", "N")
   if (is.character(ma) && !grepl("\\.(gz|bz2|zip)$", ma)) {
     r <- tidy_cpp(path.expand(ma), path.expand(file.path(ld, "snp.info")), if (is.null(out)) "" else path.expand(out),
@@ -43,6 +44,7 @@ tidy <- function(ma, ld, out = NULL, freq_thresh = 0.2, N_sd_range = 3, rate2pq 
     if (k[["n_out"]] / k[["n_ld"]] < 0.7)
       warning("Too many SNPs (>30%) were missing in the summary data after QC. The results may be unreliable.")
     tb <- r$table
+    if (idx && !is.null(si)) return(invisible(setDT(tb)))
     if (is.null(tb$SNP)) {
       if (nrow(si) != k[["n_ld"]]) stop("snp.info in memory does not match ", file.path(ld, "snp.info"))
       i <- tb$idx
@@ -94,7 +96,18 @@ tidy <- function(ma, ld, out = NULL, freq_thresh = 0.2, N_sd_range = 3, rate2pq 
 }
 
 # snp.info with standard names SNP, A1, A2, freq, N, Block (SBayesRC: Chrom ID Index GenPos PhysPos A1 A2 A1Freq N Block)
-.read_snpinfo <- function(ld) .std_snpinfo(fread(file.path(ld, "snp.info"), showProgress = FALSE))
+.read_snpinfo <- function(ld) {
+  f <- file.path(ld, "snp.info")
+  h <- names(fread(f, nrows = 0, showProgress = FALSE))
+  need <- c("ID", "A1", "A2", "A1Freq", "N", "Block")
+  if (all(need %in% h)) {   # read only the needed columns (2-3x faster on 7M SNPs)
+    si <- fread(f, select = need, colClasses = list(character = c("ID", "A1", "A2")), showProgress = FALSE)
+    setnames(si, c("ID", "A1Freq"), c("SNP", "freq"))
+    setcolorder(si, c("SNP", "A1", "A2", "freq", "N", "Block"))   # in place, no copy of 7M strings
+    return(si)
+  }
+  .std_snpinfo(fread(f, showProgress = FALSE))
+}
 
 .std_snpinfo <- function(si) {
   si <- as.data.table(si)
