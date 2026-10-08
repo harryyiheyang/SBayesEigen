@@ -122,3 +122,19 @@ test_that("ab.bin: a block whose SNPs are all in A (no B components) gives zero 
   ab <- fit$par$abc[set == "A"]
   expect_equal(fit$snpRes$beta_std[b2], ab$beta_std[match(si$ID[b2], ab$SNP)], tolerance = 1e-12)
 })
+
+test_that("ab.bin: imputed input with se = 0, r2 = NA and a block without typed SNPs gives a finite fit", {
+  fx <- ab_fixture(); si <- fx$si; m <- nrow(si); n <- 5e4
+  X <- scale(fx$G[, match(si$ID, paste0("rs", 1:300))]) / sqrt(nrow(fx$G) - 1); R <- crossprod(X)
+  set.seed(9); beta <- numeric(m); beta[c(30, 220)] <- c(0.09, 0.06)
+  bh <- drop(R %*% beta) + drop(crossprod(X, rnorm(nrow(X)))) / sqrt(n)
+  f <- si$A1Freq; s <- sqrt(2 * f * (1 - f))
+  # already-imputed input (snp.info order, r2 column; r2 = 1 typed)
+  im <- data.table::data.table(SNP = si$ID, A1 = si$A1, A2 = si$A2, freq = f, b = bh / s,
+                               se = sqrt((1 - bh^2) / n) / s, p = 0.5, N = n, r2 = ifelse(runif(m) < 0.9, 1, 0.9))
+  b2 <- si$Block == unique(si$Block)[2]
+  im$r2[b2 & im$r2 == 1] <- 0.95          # block 2: no typed SNP
+  im$se[3] <- 0; im$r2[5] <- NA; im$N[7] <- NA
+  fit <- suppressMessages(sbayeseigen(im, fx$ld, threads = 2))
+  expect_true(is.finite(fit$par$Vg)); expect_true(all(is.finite(fit$snpRes$beta_std)))
+})

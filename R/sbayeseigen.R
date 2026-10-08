@@ -127,12 +127,18 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     ldsc <- ldsc_eigen(x$bh_ty, lds[x$ty], x$n_ty, M = nrow(si))
     h2p <- max(ldsc$h2, 0.01)
     nc <- rep(x$nbar[run][use], kb)
+    # ab.bin: the first rankA components of a block are R_AA's (A); LD-mismatch noise is modelled on B only
+    isB <- if (abld) unlist(lapply(p1[use], function(b) rep(c(FALSE, TRUE), c(b$rankA, length(b$lam) - b$rankA)))) else rep(TRUE, length(w))
+    bad <- !is.finite(w) | !is.finite(nc) | !(lam > 0)
+    if (any(bad)) stop(sprintf("%s%d of %d components have a non-finite w or N, or lambda <= 0 (blocks %s); check b, se, N (and r2) in the summary data",
+                               if (K > 1) paste0(tn[t], ": ") else "", sum(bad), length(bad),
+                               paste(utils::head(unique(rep(names(rows)[run][use], kb)[bad]), 10), collapse = ", ")))
     if (identical(kappa, "mom")) {
-      nm <- noise_mom(w, lam, nc, h2p); vt <- nm$ve0; kp <- nm$kappa
+      nm <- noise_mom(w[isB], lam[isB], nc[isB], h2p); vt <- nm$ve0; kp <- nm$kappa
     } else {
       vt <- if (identical(ve, "ldsc")) min(max(ldsc$intercept, 0.9), 2) else as.numeric(ve); kp <- kappa
     }
-    vj <- vt + kp / lam   # residual variance per component; VI sees n / vj with ve = 1
+    vj <- vt + kp / lam * isB   # residual variance per component; VI sees n / vj with ve = 1 (A components: ve0)
     if (abld) {
       ab <- .abj_setup(x, p1[use], rows[run][use], t)
       fit <- abj_vi(w, nc / vj, ab$blk, tau = mcp[[1]], a = mcp[[2]], threads = threads, h2p = h2p)
@@ -249,14 +255,15 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     message("Summary data already imputed")
     if (!identical(as.character(x$SNP), si$SNP) || !identical(x$A1, si$A1))
       stop("imputed summary data are not in snp.info order and allele coding; run impute() on the tidied data")
-    obs <- x$r2 >= 0; typed <- x$r2 == 1
     b <- x$b; se <- x$se; N <- x$N
+    obs <- !is.na(x$r2) & x$r2 >= 0 & is.finite(b) & is.finite(se) & se > 0 & is.finite(N) & N > 0
+    typed <- obs & x$r2 == 1
     scale <- sqrt(N * se^2 + b^2)
-    nmiss <- stats::median(N)
+    nmiss <- stats::median(N[obs])
   } else {
     a <- .align(.tidy(x, ld, si = si, idx = TRUE), si)
     b <- a$res$b; se <- a$res$se; N <- a$res$N; f <- a$res$freq
-    obs <- typed <- is.finite(b)
+    obs <- typed <- is.finite(b) & is.finite(se) & se > 0 & is.finite(N) & N > 0
     scale <- ifelse(obs, sqrt(N * se^2 + b^2), sqrt(a$vp / (2 * f * (1 - f))))
     nmiss <- a$Nmed
   }
@@ -264,7 +271,8 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
   ty <- which(typed)
   list(ti = lapply(rows, function(r) which(obs[r]) - 1L), z = lapply(rows, function(r) z[r][obs[r]]),
        n = lapply(rows, function(r) N[r][obs[r]]), typ = lapply(rows, function(r) typed[r][obs[r]]), nmiss = nmiss, nty = vapply(rows, function(r) sum(obs[r]), 0),
-       nbar = vapply(rows, function(r) mean(N[r][typed[r]]), 0), scale = scale,
+       nbar = vapply(rows, function(r) if (any(typed[r])) mean(N[r][typed[r]]) else if (any(obs[r])) mean(N[r][obs[r]]) else nmiss, 0),
+       scale = scale,
        ty = ty, bh_ty = b[ty] / scale[ty], n_ty = N[ty])
 }
 

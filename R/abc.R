@@ -72,6 +72,7 @@ abc_vi <- function(w, c, p, kb, X, role, tau = 5, a = 2.5, gA = .abc_const$gA, g
 # per iteration (abj_sweep_cpp); stops as abc_vi.
 abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_const$gB,
                    tol = 5e-4, stopz = 0.05, maxit = 1000, threads = 4, h2p = NULL) {
+  if (!all(is.finite(w)) || !all(is.finite(p) & p > 0)) stop("abj_vi: non-finite w or non-positive precision p")
   rk <- vapply(blk, function(x) nrow(x$XA), 0L); kB <- lengths(lapply(blk, `[[`, "sl"))
   off <- as.integer(c(0, cumsum(rk + kB))[seq_along(blk)])
   iB <- unlist(lapply(seq_along(blk), function(b) off[b] + rk[b] + seq_len(kB[b])))
