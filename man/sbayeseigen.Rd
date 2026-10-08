@@ -15,12 +15,14 @@ sbayeseigen(
   tol = 1e-04,
   method = c("abc", "eigen"),
   annot = NULL,
-  mcp = c(tau = 5, a = 2.5)
+  mcp = c(tau = 5, a = 2.5),
+  beta_ref = FALSE
 )
 }
 \arguments{
-\item{ma}{GWAS summary statistics, SNP A1 A2 freq Z N (Z used when present; output beta is then the
-per-dosage effect in phenotype SD with the LD reference freq) or COJO format (SNP A1 A2 freq b se p N), raw or already
+\item{ma}{GWAS summary statistics in COJO format (SNP A1 A2 freq b se p N) or the simplified format
+SNP A1 A2 A1freq Z N (see \code{\link{tidy}}; output beta is then the per-dosage effect in phenotype
+SD with the LD reference freq), raw or already
 imputed: a path or a data.frame, or for several traits a character vector of paths or a list
 of data.frames. Trait names are \code{names(ma)}, else the file names without extension.}
 
@@ -65,6 +67,9 @@ with a \code{SNP} column (else its first column). \code{NULL}: A is empty.}
 \item{mcp}{MCP threshold \code{tau} and concavity \code{a} for C (Yihe 2026-10-07: 5 and 2.5). The
 threshold is in units of the residual z noise sd, \eqn{\tau\sqrt{ve_0}} under constant noise; with
 \code{kappa} the per-component noise \eqn{ve_0 + \kappa/\lambda} enters through the precision.}
+
+\item{beta_ref}{\code{TRUE}: output beta = beta_std \eqn{\sqrt{V_y / 2p(1-p)}} with p the LD reference
+A1 frequency for COJO input as well (always so for the simplified format).}
 }
 \value{
 Invisibly. One trait: a list with \code{snpRes} (SNP, A1, A2, Block, beta, beta_std,

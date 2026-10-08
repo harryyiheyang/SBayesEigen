@@ -8,7 +8,7 @@
 #' \code{se = 1}, \code{r2 = -1}. Input that is already imputed (an \code{r2} column and one
 #' row per \code{snp.info} SNP) is returned unchanged.
 #'
-#' @param ma Summary data (SNP A1 A2 freq b se p N, or SNP A1 A2 freq Z N as in \code{\link{tidy}}):
+#' @param ma Summary data (SNP A1 A2 freq b se p N, or SNP A1 A2 A1freq Z N as in \code{\link{tidy}}):
 #'   a path or a data.frame, e.g. the output of \code{\link{tidy}}.
 #' @param ld LD folder with \code{snp.info} and \code{block*.eigen.bin}; the leading eigen
 #'   components holding 99.5\% of the eigenvalue mass are used, as in \code{\link{sbayeseigen}}.

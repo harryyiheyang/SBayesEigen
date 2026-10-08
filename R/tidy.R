@@ -9,8 +9,9 @@
 #' (files read whole, lines split in parallel, SNPs matched by hashing, output lines copied
 #' from the input); a data.frame or a compressed file goes through R.
 #'
-#' @param ma Summary data, a path or a data.frame: SNP A1 A2 freq Z N (a Z column is used when present;
-#'   freq may be missing, then the LD reference's is used), or COJO format (SNP A1 A2 freq b se p N).
+#' @param ma Summary data, a path or a data.frame: COJO format (SNP A1 A2 freq b se p N), or the
+#'   simplified format SNP A1 A2 A1freq Z N (a Z / Zscore column and no b, se; names case-insensitive;
+#'   freq may be missing, then the LD reference's is used; rows with a non-finite Z are dropped).
 #'   Z input is converted to COJO on the phenotype-SD scale (\eqn{V_y = 1}).
 #' @param ld LD folder with \code{snp.info}.
 #' @param out Output path; \code{NULL} writes nothing.
@@ -126,22 +127,27 @@ tidy <- function(ma, ld, out = NULL, freq_thresh = 0.2, N_sd_range = 3, rate2pq 
   out
 }
 
-# Z-score input (SNP A1 A2 [freq] Z N; Yihe 2026-10-08): the model only needs z and N, so a Z column (used when
-# present) is converted to COJO on the phenotype-SD scale, b = Z / sqrt(2pq (N + Z^2)), se = b / Z, Var_y = 1.
+# Z-score input (SNP A1 A2 [A1freq] Z N, column names case-insensitive; Yihe 2026-10-08): the model only needs z
+# and N, so a Z column (when there are no b/se columns) is converted to COJO on the phenotype-SD scale, b = Z / sqrt(2pq (N + Z^2)), se = b / Z, Var_y = 1.
 # A missing freq column (or value) takes the LD reference's frequency of A1.
-.zcols <- c("Z", "z", "Zscore", "zscore", "ZSCORE")
-.fcols <- c("freq", "A1freq", "A1Freq", "FRQ", "AF")
+.zcols <- c("z", "zscore")
+.fcols <- c("freq", "a1freq", "frq", "af", "eaf")
+# simplified format: a Z column (case-insensitive) and no b/se columns
 .is_zinput <- function(ma) {
-  h <- if (is.character(ma)) names(fread(ma, nrows = 0, showProgress = FALSE)) else names(ma)
-  any(.zcols %in% h)
+  h <- tolower(if (is.character(ma)) names(fread(ma, nrows = 0, showProgress = FALSE)) else names(ma))
+  any(.zcols %in% h) && !all(c("b", "se") %in% h)
 }
 .z_to_cojo <- function(ma, si) {
   ma <- if (is.data.frame(ma)) as.data.table(ma) else fread(ma, showProgress = FALSE)
+  lc <- tolower(names(ma)); col <- function(x) names(ma)[match(x, lc)]
+  std <- c(snp = "SNP", a1 = "A1", a2 = "A2", n = "N")
+  for (k in names(std)) if (k %in% lc && !std[[k]] %in% names(ma)) setnames(ma, col(k), std[[k]])
+  lc <- tolower(names(ma))
   miss <- setdiff(c("SNP", "A1", "A2", "N"), names(ma))
   if (length(miss)) stop("Z-score summary data needs SNP A1 A2 Z N; missing: ", paste(miss, collapse = ", "))
-  z <- suppressWarnings(as.numeric(ma[[intersect(.zcols, names(ma))[1]]]))
-  fc <- intersect(.fcols, names(ma))
-  f <- if (length(fc)) suppressWarnings(as.numeric(ma[[fc[1]]])) else rep(NA_real_, nrow(ma))
+  z <- suppressWarnings(as.numeric(ma[[col(intersect(.zcols, lc)[1])]]))
+  fc <- intersect(.fcols, lc)
+  f <- if (length(fc)) suppressWarnings(as.numeric(ma[[col(fc[1])]])) else rep(NA_real_, nrow(ma))
   if (anyNA(f)) {
     m <- chmatch(as.character(ma$SNP), si$SNP); fr <- ifelse(ma$A1 == si$A1[m], si$freq[m], 1 - si$freq[m])
     message(sum(is.na(f)), " SNPs without freq take the LD reference frequency")

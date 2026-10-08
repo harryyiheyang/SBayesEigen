@@ -155,6 +155,13 @@ test_that("Z-score input (SNP A1 A2 freq Z N) fits like the equivalent COJO inpu
   # no freq column: the reference's is used; flipped alleles keep the sign right
   zf <- data.table::copy(zd)[, A1freq := NULL]; fl <- 1:20
   zf[fl, `:=`(A1 = A2, A2 = A1, Z = -Z)]
+  # names case-insensitive; Z together with b/se: COJO is used
+  zl <- data.table::copy(zd); data.table::setnames(zl, c("snp", "a1", "a2", "A1FREQ", "zscore", "n"))
+  expect_equal(suppressMessages(sbayeseigen(zl, fx$ld, threads = 2))$snpRes$beta, fz$snpRes$beta, tolerance = 1e-8)
+  expect_false(SBayesEigen:::.is_zinput(cbind(cj, Z = 1)))
+  # beta_ref: COJO output on the reference-freq dosage scale too (Var_y = 1 here)
+  fr <- suppressMessages(sbayeseigen(cj, fx$ld, threads = 2, beta_ref = TRUE))
+  expect_equal(fr$snpRes$beta, fz$snpRes$beta, tolerance = 1e-6)
   tz <- suppressMessages(tidy(zf, fx$ld)); td <- suppressMessages(tidy(zd, fx$ld)); i <- match(td$SNP, tz$SNP)
   sg <- ifelse(td$SNP %in% zd$SNP[fl], -1, 1)
   expect_equal(tz$b[i], sg * td$b, tolerance = 1e-4)

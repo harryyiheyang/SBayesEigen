@@ -7,7 +7,7 @@
 impute(ma, ld, out = NULL, threads = 4)
 }
 \arguments{
-\item{ma}{Summary data (SNP A1 A2 freq b se p N, or SNP A1 A2 freq Z N as in \code{\link{tidy}}):
+\item{ma}{Summary data (SNP A1 A2 freq b se p N, or SNP A1 A2 A1freq Z N as in \code{\link{tidy}}):
 a path or a data.frame, e.g. the output of \code{\link{tidy}}.}
 
 \item{ld}{LD folder with \code{snp.info} and \code{block*.eigen.bin}; the leading eigen

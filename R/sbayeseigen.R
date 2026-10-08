@@ -11,8 +11,9 @@
 #' the rotation and \eqn{\beta = U E[\alpha]} are done for all traits while a block is in memory.
 #' LDSC and VI are fitted per trait, so every trait gets the same result as on its own.
 #'
-#' @param ma GWAS summary statistics, SNP A1 A2 freq Z N (Z used when present; output beta is then the
-#'   per-dosage effect in phenotype SD with the LD reference freq) or COJO format (SNP A1 A2 freq b se p N), raw or already
+#' @param ma GWAS summary statistics in COJO format (SNP A1 A2 freq b se p N) or the simplified format
+#'   SNP A1 A2 A1freq Z N (see \code{\link{tidy}}; output beta is then the per-dosage effect in phenotype
+#'   SD with the LD reference freq), raw or already
 #'   imputed: a path or a data.frame, or for several traits a character vector of paths or a list
 #'   of data.frames. Trait names are \code{names(ma)}, else the file names without extension.
 #' @param ld LD folder with \code{snp.info} and \code{block<b>.eigen.bin} (from
@@ -47,6 +48,8 @@
 #' @param mcp MCP threshold \code{tau} and concavity \code{a} for C (Yihe 2026-10-07: 5 and 2.5). The
 #'   threshold is in units of the residual z noise sd, \eqn{\tau\sqrt{ve_0}} under constant noise; with
 #'   \code{kappa} the per-component noise \eqn{ve_0 + \kappa/\lambda} enters through the precision.
+#' @param beta_ref \code{TRUE}: output beta = beta_std \eqn{\sqrt{V_y / 2p(1-p)}} with p the LD reference
+#'   A1 frequency for COJO input as well (always so for the simplified format).
 #' @return Invisibly. One trait: a list with \code{snpRes} (SNP, A1, A2, Block, beta, beta_std,
 #'   every \code{snp.info} SNP; 0 in blocks without typed SNPs) and \code{par} (Vg, Vg_sd, ve, pi,
 #'   sigma2, LDSC fit, timings, and \code{comp}: per eigen component its Block, lambda, n, w and
@@ -63,20 +66,21 @@
 #' }
 #' @export
 sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", thresh = 0.995, tol = 1e-4,
-                        method = c("abc", "eigen"), annot = NULL, mcp = c(tau = 5, a = 2.5)) {
+                        method = c("abc", "eigen"), annot = NULL, mcp = c(tau = 5, a = 2.5), beta_ref = FALSE) {
   method <- match.arg(method)
   if (!is.null(names(mcp)) && all(c("tau", "a") %in% names(mcp))) mcp <- mcp[c("tau", "a")]
   if (length(mcp) != 2 || mcp[[1]] <= 0 || mcp[[2]] <= 1) stop("mcp must be c(tau = > 0, a = > 1)")
   # messages still go to the console; with out they are also written to <prefix>.log per trait
   msg <- character(0)
-  r <- withCallingHandlers(.sbayeseigen(ma, ld, out, threads, ve, kappa, thresh, tol, method, annot, mcp),
+  r <- withCallingHandlers(.sbayeseigen(ma, ld, out, threads, ve, kappa, thresh, tol, method, annot, mcp, beta_ref),
                            message = function(m) msg <<- c(msg, sub("\n$", "", conditionMessage(m))))
   for (p in attr(r, "prefix")) writeLines(c(format(Sys.time()), msg), paste0(p, ".log"))
   attr(r, "prefix") <- NULL
   invisible(r)
 }
 
-.sbayeseigen <- function(ma, ld, out, threads, ve, kappa, thresh, tol, method = "eigen", annot = NULL, mcp = c(5, 2.5)) {
+.sbayeseigen <- function(ma, ld, out, threads, ve, kappa, thresh, tol, method = "eigen", annot = NULL, mcp = c(5, 2.5),
+                         beta_ref = FALSE) {
   if (!identical(kappa, "mom") && !(is.numeric(kappa) && length(kappa) == 1 && kappa >= 0))
     stop("kappa must be \"mom\" or a number >= 0")
   tm <- c(start = proc.time()[[3]])
@@ -94,7 +98,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
   # ---- summary data per trait (one full table in memory at a time) ----
   inp <- lapply(seq_len(K), function(t) {
     if (K > 1) message("---- ", tn[t])
-    .trait_input(ma[[t]], ld, si, rows)
+    .trait_input(ma[[t]], ld, si, rows, beta_ref)
   })
   tm["read"] <- proc.time()[[3]]
 
@@ -250,7 +254,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
 
 # one trait, slim: per block typed index (0-based), z, N; scale = sqrt(N se^2 + b^2) on every SNP (imputed
 # SNPs: sqrt(var_y / 2pq), as impute() writes them); typed SNPs for LDSC; mean typed N per block
-.trait_input <- function(x, ld, si, rows) {
+.trait_input <- function(x, ld, si, rows, beta_ref = FALSE) {
   if (is.character(x) && "r2" %in% names(fread(x, nrows = 0, showProgress = FALSE))) x <- fread(x, showProgress = FALSE)
   if (is.data.frame(x) && .is_imputed(x, si)) {
     message("Summary data already imputed")
@@ -265,13 +269,15 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     obs <- rep(TRUE, length(b)); typed <- ok & !is.na(x$r2) & x$r2 == 1
     scale <- ifelse(ok, sqrt(N * se^2 + b^2), sqrt(vp / (2 * f * (1 - f))))
     b[!ok] <- 0; se[!ok] <- 1; N[!ok] <- nmiss
+    if (beta_ref) scale <- sqrt(vp / (2 * si$freq * (1 - si$freq)))
   } else {
     zin <- .is_zinput(x)
     a <- .align(.tidy(x, ld, si = si, idx = TRUE), si)
     b <- a$res$b; se <- a$res$se; N <- a$res$N; f <- a$res$freq
     obs <- typed <- is.finite(b) & is.finite(se) & se > 0 & is.finite(N) & N > 0
     scale <- ifelse(obs, sqrt(N * se^2 + b^2), sqrt(a$vp / (2 * f * (1 - f))))
-    if (zin) scale <- 1 / sqrt(2 * si$freq * (1 - si$freq))   # Z input: per-dosage effect (phenotype SD), LD reference freq
+    # Z input (Var_y = 1) or beta_ref: per-dosage effect with the LD reference freq
+    if (zin || beta_ref) scale <- sqrt(a$vp / (2 * si$freq * (1 - si$freq)))
     nmiss <- a$Nmed
   }
   z <- b / se
