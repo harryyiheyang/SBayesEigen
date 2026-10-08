@@ -19,7 +19,8 @@ sbayeseigen(
 )
 }
 \arguments{
-\item{ma}{GWAS summary statistics in COJO format (SNP A1 A2 freq b se p N), raw or already
+\item{ma}{GWAS summary statistics, SNP A1 A2 freq Z N (Z used when present; output beta is then the
+per-dosage effect in phenotype SD with the LD reference freq) or COJO format (SNP A1 A2 freq b se p N), raw or already
 imputed: a path or a data.frame, or for several traits a character vector of paths or a list
 of data.frames. Trait names are \code{names(ma)}, else the file names without extension.}
 

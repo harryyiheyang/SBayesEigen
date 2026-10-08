@@ -11,7 +11,8 @@
 #' the rotation and \eqn{\beta = U E[\alpha]} are done for all traits while a block is in memory.
 #' LDSC and VI are fitted per trait, so every trait gets the same result as on its own.
 #'
-#' @param ma GWAS summary statistics in COJO format (SNP A1 A2 freq b se p N), raw or already
+#' @param ma GWAS summary statistics, SNP A1 A2 freq Z N (Z used when present; output beta is then the
+#'   per-dosage effect in phenotype SD with the LD reference freq) or COJO format (SNP A1 A2 freq b se p N), raw or already
 #'   imputed: a path or a data.frame, or for several traits a character vector of paths or a list
 #'   of data.frames. Trait names are \code{names(ma)}, else the file names without extension.
 #' @param ld LD folder with \code{snp.info} and \code{block<b>.eigen.bin} (from
@@ -265,10 +266,12 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     scale <- ifelse(ok, sqrt(N * se^2 + b^2), sqrt(vp / (2 * f * (1 - f))))
     b[!ok] <- 0; se[!ok] <- 1; N[!ok] <- nmiss
   } else {
+    zin <- .is_zinput(x)
     a <- .align(.tidy(x, ld, si = si, idx = TRUE), si)
     b <- a$res$b; se <- a$res$se; N <- a$res$N; f <- a$res$freq
     obs <- typed <- is.finite(b) & is.finite(se) & se > 0 & is.finite(N) & N > 0
     scale <- ifelse(obs, sqrt(N * se^2 + b^2), sqrt(a$vp / (2 * f * (1 - f))))
+    if (zin) scale <- 1 / sqrt(2 * si$freq * (1 - si$freq))   # Z input: per-dosage effect (phenotype SD), LD reference freq
     nmiss <- a$Nmed
   }
   z <- b / se

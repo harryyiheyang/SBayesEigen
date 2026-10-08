@@ -13,7 +13,7 @@ LDbuild(
   blockRef = NULL,
   minsnp = 100,
   A = NULL,
-  tolA = 1e-6,
+  tolA = 1e-06,
   mem = NULL
 )
 }

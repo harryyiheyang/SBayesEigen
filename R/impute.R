@@ -8,8 +8,8 @@
 #' \code{se = 1}, \code{r2 = -1}. Input that is already imputed (an \code{r2} column and one
 #' row per \code{snp.info} SNP) is returned unchanged.
 #'
-#' @param ma Summary data (SNP A1 A2 freq b se p N): a path or a data.frame, e.g. the output
-#'   of \code{\link{tidy}}.
+#' @param ma Summary data (SNP A1 A2 freq b se p N, or SNP A1 A2 freq Z N as in \code{\link{tidy}}):
+#'   a path or a data.frame, e.g. the output of \code{\link{tidy}}.
 #' @param ld LD folder with \code{snp.info} and \code{block*.eigen.bin}; the leading eigen
 #'   components holding 99.5\% of the eigenvalue mass are used, as in \code{\link{sbayeseigen}}.
 #' @param out Output path (may equal \code{ma}; replaced atomically); \code{NULL} writes nothing.
@@ -20,7 +20,7 @@
 impute <- function(ma, ld, out = NULL, threads = 4) {
   t0 <- proc.time()[[3]]
   si <- .read_snpinfo(ld)
-  ma <- if (is.data.frame(ma)) as.data.table(ma) else fread(ma, showProgress = FALSE)
+  ma <- if (.is_zinput(ma)) .z_to_cojo(ma, si) else if (is.data.frame(ma)) as.data.table(ma) else fread(ma, showProgress = FALSE)
   if (.is_imputed(ma, si)) {
     message("Already imputed: r2 exists and the summary data has one row per snp.info SNP")
     return(invisible(ma))

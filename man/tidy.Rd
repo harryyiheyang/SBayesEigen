@@ -7,7 +7,9 @@
 tidy(ma, ld, out = NULL, freq_thresh = 0.2, N_sd_range = 3, rate2pq = 0.5)
 }
 \arguments{
-\item{ma}{Summary data in COJO format (SNP A1 A2 freq b se p N): a path or a data.frame.}
+\item{ma}{Summary data, a path or a data.frame: SNP A1 A2 freq Z N (a Z column is used when present;
+freq may be missing, then the LD reference's is used), or COJO format (SNP A1 A2 freq b se p N).
+Z input is converted to COJO on the phenotype-SD scale (\eqn{V_y = 1}).}
 
 \item{ld}{LD folder with \code{snp.info}.}
 

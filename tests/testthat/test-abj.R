@@ -138,3 +138,24 @@ test_that("ab.bin: imputed input with se = 0, r2 = NA and a block without typed 
   expect_message(fit <- sbayeseigen(im, fx$ld, threads = 2), "3 rows with a non-finite")
   expect_true(is.finite(fit$par$Vg)); expect_true(all(is.finite(fit$snpRes$beta_std)))
 })
+
+test_that("Z-score input (SNP A1 A2 freq Z N) fits like the equivalent COJO input; beta is per dosage with reference freq", {
+  fx <- ab_fixture(); si <- fx$si; m <- nrow(si); n <- 5e4
+  X <- scale(fx$G[, match(si$ID, paste0("rs", 1:300))]) / sqrt(nrow(fx$G) - 1); R <- crossprod(X)
+  set.seed(9); beta <- numeric(m); beta[c(30, 220)] <- c(0.09, 0.06)
+  bh <- drop(R %*% beta) + drop(crossprod(X, rnorm(nrow(X)))) / sqrt(n)
+  z <- bh * sqrt(n) / sqrt(1 - bh^2); f <- si$A1Freq; k <- sort(sample(m, 0.9 * m))
+  zd <- data.table::data.table(SNP = si$ID, A1 = si$A1, A2 = si$A2, A1freq = f, Z = z, N = n)[k]
+  s <- 1 / sqrt(2 * f * (1 - f) * (n + z^2))
+  cj <- data.table::data.table(SNP = si$ID, A1 = si$A1, A2 = si$A2, freq = f, b = z * s, se = s,
+                               p = 0.5, N = n)[k]
+  fz <- suppressMessages(sbayeseigen(zd, fx$ld, threads = 2)); fc <- suppressMessages(sbayeseigen(cj, fx$ld, threads = 2))
+  expect_equal(fz$snpRes$beta_std, fc$snpRes$beta_std, tolerance = 1e-6)
+  expect_equal(fz$snpRes$beta, fz$snpRes$beta_std / sqrt(2 * f * (1 - f)), tolerance = 1e-8)
+  # no freq column: the reference's is used; flipped alleles keep the sign right
+  zf <- data.table::copy(zd)[, A1freq := NULL]; fl <- 1:20
+  zf[fl, `:=`(A1 = A2, A2 = A1, Z = -Z)]
+  tz <- suppressMessages(tidy(zf, fx$ld)); td <- suppressMessages(tidy(zd, fx$ld)); i <- match(td$SNP, tz$SNP)
+  sg <- ifelse(td$SNP %in% zd$SNP[fl], -1, 1)
+  expect_equal(tz$b[i], sg * td$b, tolerance = 1e-4)
+})
