@@ -134,7 +134,7 @@ test_that("ab.bin: imputed input with se = 0, r2 = NA and a block without typed 
                                se = sqrt((1 - bh^2) / n) / s, p = 0.5, N = n, r2 = ifelse(runif(m) < 0.9, 1, 0.9))
   b2 <- si$Block == unique(si$Block)[2]
   im$r2[b2 & im$r2 == 1] <- 0.95          # block 2: no typed SNP
-  im$se[3] <- 0; im$r2[5] <- NA; im$N[7] <- NA
-  fit <- suppressMessages(sbayeseigen(im, fx$ld, threads = 2))
+  im$se[3] <- 0; im$r2[5] <- NA; im$N[7] <- NA; im$b[9] <- Inf
+  expect_message(fit <- sbayeseigen(im, fx$ld, threads = 2), "3 rows with a non-finite")
   expect_true(is.finite(fit$par$Vg)); expect_true(all(is.finite(fit$snpRes$beta_std)))
 })

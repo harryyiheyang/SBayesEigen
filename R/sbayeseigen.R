@@ -255,11 +255,15 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     message("Summary data already imputed")
     if (!identical(as.character(x$SNP), si$SNP) || !identical(x$A1, si$A1))
       stop("imputed summary data are not in snp.info order and allele coding; run impute() on the tidied data")
-    b <- x$b; se <- x$se; N <- x$N
-    obs <- !is.na(x$r2) & x$r2 >= 0 & is.finite(b) & is.finite(se) & se > 0 & is.finite(N) & N > 0
-    typed <- obs & x$r2 == 1
-    scale <- sqrt(N * se^2 + b^2)
-    nmiss <- stats::median(N[obs])
+    # no second imputation: every row is used as given; rows with a non-finite b/se/N (or se <= 0) get z = 0
+    b <- x$b; se <- x$se; N <- x$N; f <- x$freq
+    ok <- is.finite(b) & is.finite(se) & se > 0 & is.finite(N) & N > 0
+    if (!all(ok)) message(sum(!ok), " rows with a non-finite b, se or N (or se <= 0) set to z = 0")
+    nmiss <- stats::median(N[ok])
+    vp <- stats::median((2 * f * (1 - f) * (N * se^2 + b^2))[ok])
+    obs <- rep(TRUE, length(b)); typed <- ok & !is.na(x$r2) & x$r2 == 1
+    scale <- ifelse(ok, sqrt(N * se^2 + b^2), sqrt(vp / (2 * f * (1 - f))))
+    b[!ok] <- 0; se[!ok] <- 1; N[!ok] <- nmiss
   } else {
     a <- .align(.tidy(x, ld, si = si, idx = TRUE), si)
     b <- a$res$b; se <- a$res$se; N <- a$res$N; f <- a$res$freq
