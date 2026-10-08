@@ -29,7 +29,7 @@
 #'   Schur complement \eqn{S = R_{BB} - R_{BA} R_{AA}^+ R_{AB}} (generalized inverse keeping eigenvalues
 #'   above \code{tolA} times the largest), and \eqn{R_{BA}}, so that R can be rebuilt; see
 #'   \code{read_ab()} in the package source for the layout.
-#' @param tolA Relative eigenvalue cut of the generalized inverse of \eqn{R_{AA}}.
+#' @param tolA Relative eigenvalue cut of the generalized inverse of \eqn{R_{AA}} (R_AA is stored as float; sbayeseigen also drops A components below 1e-6 times the largest).
 #' @param threads Threads. The largest blocks, whose single-threaded cost would set the wall time, run one at a
 #'   time on all threads (correlation kernel and, with OpenBLAS, MKL or FlexiBLAS, the LAPACK steps; the BLAS
 #'   thread count is set internally and restored); the other blocks run in parallel, one thread each.
@@ -50,7 +50,7 @@
 #' }
 #' @export
 LDbuild <- function(geno, out, thresh = 0.995, threads = 4, snps = NULL, blockRef = NULL, minsnp = 100,
-                    A = NULL, tolA = 1e-12, mem = NULL) {
+                    A = NULL, tolA = 1e-6, mem = NULL) {
   t0 <- proc.time()[[3]]
   if (is.null(blockRef)) blockRef <- system.file("extdata", "ref4cM_v37.pos", package = "SBayesEigen")
   pos <- .read_blocks(blockRef)

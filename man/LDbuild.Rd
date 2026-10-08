@@ -13,7 +13,7 @@ LDbuild(
   blockRef = NULL,
   minsnp = 100,
   A = NULL,
-  tolA = 1e-12,
+  tolA = 1e-6,
   mem = NULL
 )
 }
@@ -52,7 +52,7 @@ Schur complement \eqn{S = R_{BB} - R_{BA} R_{AA}^+ R_{AB}} (generalized inverse 
 above \code{tolA} times the largest), and \eqn{R_{BA}}, so that R can be rebuilt; see
 \code{read_ab()} in the package source for the layout.}
 
-\item{tolA}{Relative eigenvalue cut of the generalized inverse of \eqn{R_{AA}}.}
+\item{tolA}{Relative eigenvalue cut of the generalized inverse of \eqn{R_{AA}} (R_AA is stored as float; sbayeseigen also drops A components below 1e-6 times the largest).}
 
 \item{mem}{Memory cap in GB for the blocks in flight; a block of \eqn{m} SNPs needs about \eqn{24 m^2}
 bytes at its peak. Default: 80\% of the smallest of physical memory, the cgroup limit (e.g. a Slurm

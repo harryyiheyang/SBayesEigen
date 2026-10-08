@@ -312,11 +312,10 @@ Rcpp::List ab_pass1_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcp
         Eigen::SelfAdjointEigenSolver<MatrixXd> es(RAA);
         const VectorXd ev = es.eigenvalues();   // ascending
         const double mx = ev[mA - 1];
-        // the top rankA components, as LDbuild used for the A rows of UlB (a fresh cut on the float R_AA could differ)
+        // at most the top rankA components (LDbuild's cut), and only eigenvalues > 1e-6 max: R_AA is stored as float,
+        // smaller ones are rounding noise whose Lambda^{-1/2} would blow up w_A (Yihe 2026-10-08)
         std::vector<int> keep;
-        for (int j = mA - 1; j >= 0 && static_cast<int>(keep.size()) < f.rankA; --j) if (ev[j] > 0) keep.push_back(j);
-        if (static_cast<int>(keep.size()) != f.rankA) throw std::runtime_error("R_AA has fewer positive eigenvalues than rankA");
-        (void)mx;
+        for (int j = mA - 1; j >= 0 && static_cast<int>(keep.size()) < f.rankA; --j) if (ev[j] > 1e-6 * mx) keep.push_back(j);
         rk = static_cast<int>(keep.size());
         H.resize(mA, rk); RAH.resize(mA, rk);
         for (int j = 0; j < rk; ++j) {
