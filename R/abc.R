@@ -6,7 +6,15 @@
 #      i.e. tau sqrt(ve0) under constant noise; kappa enters through the per-component precision).
 # One iteration: A sweep, B EM map, C sweep, all on the shared component-space residual (no outer loop).
 # Stops when the relative change of beta'R beta < tol and no C effect moved by more than stopz (z units).
-.abc_const <- list(zA = 4.5, zC = 4, r2A = 0.9, gA = c(0, 1, 10), gB = c(0, 1, 100, 500))
+.abc_const <- list(zA = 4.5, zC = 4, r2A = 0.9, gA = c(0, 1, 10), gB = c(0, 1, 100, 500), tolB = 1e-3)
+
+# start of E[alpha^2] for B: the moment estimate, but at least h2p / sum(lambda), i.e. Vg_B = LDSC h2 at the start.
+# A start at ~0 is an absorbing state of the EM: with s2B -> 0 every class has the same likelihood, pi_B stays at
+# its start (uniform) and s2B at its value (real 7M fits 2026-10-09, where overstated noise made the moment negative).
+.abc_s2B0 <- function(p, w, c, h2p) {
+  mom <- sum((p * w^2 - 1) * p * c^2) / sum((p * c^2)^2)
+  max(mom, (if (is.null(h2p)) 1e-8 else h2p) / sum(c^2))
+}
 # Diagnostic switch (not exported; real-data chr1 ablation 2026-10-07): options(SBayesEigen.bprior = "eigen") gives B
 # the eigen-VI prior (grid 0/1e-4/.../1, scaled-inv-chi2 on tau centred at the LDSC h2) and
 # options(SBayesEigen.nemB = k) runs k EM maps of B's hyperparameters per iteration (whole-U ABC only).
@@ -44,9 +52,8 @@ abc_vi <- function(w, c, p, kb, X, role, tau = 5, a = 2.5, gA = .abc_const$gA, g
   coef <- lapply(role, function(r) numeric(length(r)))
   nA <- sum(unlist(role) == 1L); nC <- sum(unlist(role) == 2L)
   piA <- rep(1 / length(gA), length(gA)); piB <- rep(1 / length(gB), length(gB))
-  s2a <- max(sum((p * w^2 - 1) * p * c^2) / sum((p * c^2)^2), 1e-8 / sum(c^2))
-  s2B <- s2a / sum(piB * gB); s2A <- 1e-3 / max(nA, 1) / sum(piA * gA) * 10
-  Ea <- numeric(length(w)); r <- w + 0; vg_old <- Inf; dz <- 0
+  s2B <- .abc_s2B0(p, w, c, h2p) / sum(piB * gB); s2A <- 1e-3 / max(nA, 1) / sum(piA * gA) * 10
+  Ea <- numeric(length(w)); r <- w + 0; vg_old <- Inf; dz <- 0; hy_old <- c(piB, log(s2B))
   for (it in 1:maxit) {
     if (nA > 0) {
       sw <- abc_sweep_cpp(X, off, p, r, role, coef, gA, piA, s2A, tau, a, TRUE, FALSE, threads)
@@ -59,7 +66,8 @@ abc_vi <- function(w, c, p, kb, X, role, tau = 5, a = 2.5, gA = .abc_const$gA, g
     r <- rB - c * Ea
     if (nC > 0) dz <- abc_sweep_cpp(X, off, p, r, role, coef, gA, piA, s2A, tau, a, FALSE, TRUE, threads)$dz
     vg <- sum((w - r)^2)
-    if (it > 3 && abs(vg - vg_old) < tol * vg && dz < stopz) break
+    hy <- c(piB, log(s2B)); dh <- max(abs(hy - hy_old)); hy_old <- hy
+    if (it > 3 && abs(vg - vg_old) < tol * vg && dz < stopz && dh < .abc_const$tolB) break
     vg_old <- vg
   }
   list(alpha = Ea, coef = coef, Vg = vg, Vg_B = sum((c * Ea)^2), piA = piA, s2A = s2A, piB = piB, s2B = s2B,
@@ -81,15 +89,15 @@ abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_co
   piA <- rep(1 / length(gA), length(gA)); piB <- rep(1 / length(gB), length(gB))
   pB <- p[iB]; wB <- w[iB]
   bp <- .abc_bprior(h2p, sum(sl^2)); if (!is.null(h2p)) gB <- bp$gB; piB <- rep(1 / length(gB), length(gB))
-  s2a <- max(sum((pB * wB^2 - 1) * pB * sl^2) / sum((pB * sl^2)^2), 1e-8 / sum(sl^2))
-  s2B <- s2a / sum(piB * gB); s2A <- 1e-3 / max(nA, 1) / sum(piA * gA) * 10
-  r <- w + 0; vg_old <- Inf
+  s2B <- .abc_s2B0(pB, wB, sl, h2p) / sum(piB * gB); s2A <- 1e-3 / max(nA, 1) / sum(piA * gA) * 10
+  r <- w + 0; vg_old <- Inf; hy_old <- c(piB, log(s2B))
   for (it in 1:maxit) {
     s <- abj_sweep_cpp(blk, off, p, r, mA, al, gC, gA, piA, s2A, gB, piB, s2B, tau, a, threads)
     if (nA > 0) { piA <- pmax(s$sphiA / nA, 1e-300); s2A <- max(s$saA / max(s$snzA, 1e-12), 1e-12) }
     piB <- pmax(s$sphiB / length(sl), 1e-300); s2B <- max((s$saB + bp$s2p / bp$A0) / max(s$snzB + bp$nu + 2, 1e-12), 1e-12)
     vg <- sum((w - r)^2)   # whitened fit: (w - r)'(w - r) = beta' R beta
-    if (it > 3 && abs(vg - vg_old) < tol * vg && s$dz < stopz) break
+    hy <- c(piB, log(s2B)); dh <- max(abs(hy - hy_old)); hy_old <- hy
+    if (it > 3 && abs(vg - vg_old) < tol * vg && s$dz < stopz && dh < .abc_const$tolB) break
     vg_old <- vg
   }
   list(alpha = al, mA = mA, gC = gC, Vg = vg, Vg_B = sum((sl * unlist(al))^2), piA = piA, s2A = s2A, piB = piB, s2B = s2B,

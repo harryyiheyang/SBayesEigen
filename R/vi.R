@@ -68,7 +68,7 @@ ldsc_eigen <- function(bhat, l, n, M = length(bhat)) {
 # subtracted, components with lambda < lam0 are put in nbin equal-count bins by lambda, and the bin means
 # are regressed on (1, 1/lambda) by weighted least squares (weights 1/fit^2, as LDSC), with
 # ve0 in ve_range and kappa >= 0. Returns ve0, kappa and the number of components used.
-noise_mom <- function(w, lam, n, h2, lam0 = 1, nbin = 100, ve_range = c(0.9, 1.2)) {
+noise_mom <- function(w, lam, n, h2, lam0 = 1, nbin = 100, ve_range = c(0.5, 1.5)) {
   tau <- h2 / sum(lam)
   s <- lam < lam0
   if (sum(s) < 2 * nbin) return(list(ve0 = 1, kappa = 0, n_comp = sum(s)))

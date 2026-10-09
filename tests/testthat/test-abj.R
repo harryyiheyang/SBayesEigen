@@ -166,3 +166,17 @@ test_that("Z-score input (SNP A1 A2 freq Z N) fits like the equivalent COJO inpu
   sg <- ifelse(td$SNP %in% zd$SNP[fl], -1, 1)
   expect_equal(tz$b[i], sg * td$b, tolerance = 1e-4)
 })
+
+test_that("abj_vi: B hyperparameters learn when the moment start of s2B is negative (no absorbing s2B ~ 0)", {
+  # old start (moment, floored at ~0) gave pi_B exactly uniform, Vg_B ~ 5e-11 and a stop at iteration 4
+  set.seed(1); nb <- 50; k <- 200; n <- 1e4
+  blk <- lapply(1:nb, function(b) list(XA = matrix(0, 0, 0), Cm = matrix(0, 0, k), sl = sqrt(rexp(k, 1 / 3) + 1e-3),
+                                        XCa = matrix(0, 0, 0), XCb = matrix(0, k, 0)))
+  sl <- unlist(lapply(blk, `[[`, "sl")); M <- length(sl)
+  al <- rnorm(M) * (runif(M) < 0.1); al <- al * sqrt(0.1 / sum((sl * al)^2))
+  w <- sl * al + rnorm(M) * sqrt(0.55 / n); p <- rep(n / 0.9, M)   # noise overstated: moment start < 0
+  expect_lt(sum((p * w^2 - 1) * p * sl^2), 0)
+  f <- SBayesEigen:::abj_vi(w, p, blk, threads = 2, h2p = 0.1)
+  expect_gt(max(abs(f$piB - 0.25)), 0.05)
+  expect_gt(f$Vg_B, 0.005)
+})

@@ -43,7 +43,7 @@ timings are for the whole batch. \code{NULL} writes nothing.}
 clamped to [0.9, 2]. Not used when \code{kappa = "mom"}, which estimates it.}
 
 \item{kappa}{LD-mismatch noise: the residual variance of eigen component j is
-\eqn{ve_0 + \kappa / \lambda_j}. \code{"mom"} (default) estimates \eqn{ve_0} (within [0.9, 1.2])
+\eqn{ve_0 + \kappa / \lambda_j}. \code{"mom"} (default) estimates \eqn{ve_0} (within [0.5, 1.5])
 and \eqn{\kappa \ge 0} by moments on the components with \eqn{\lambda < 1} (100 bins, LDSC
 signal subtracted); a number fixes \eqn{\kappa} with \eqn{ve_0} = \code{ve}; 0 gives the
 constant residual variance \code{ve}.}
