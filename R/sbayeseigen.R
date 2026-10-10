@@ -151,6 +151,24 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
       vt <- if (identical(ve, "ldsc")) min(max(ldsc$intercept, 0.9), 2) else as.numeric(ve); kp <- kappa
     }
     vj <- vt + kp / lam * isB   # residual variance per component; VI sees n / vj with ve = 1 (A components: ve0)
+    # experimental, off by default (Yihe 2026-10-10, after SBayesRC's per-block ve and outlier removal). Under the model a
+    # B component has E[n w^2] = vj + n lam tau0, tau0 = h2p / sum(lam_B) (Vg_B = LDSC h2), so signal shrinks with lam.
+    # options(SBayesEigen.blockve = TRUE): fixed per-block noise multiplier s_b = 1 + max(0, mean_b(n w^2 / E) - 1)
+    #   k_b / (k_b + 50) from the block's B components (only inflation), applied to all its components.
+    # options(SBayesEigen.dropT = 30): B components with lam < 1 and n w^2 / E > dropT get precision ~0 (out of the fit).
+    bb <- rep(seq_along(kb), kb); tau0 <- h2p / sum(lam[isB]); ndrop <- 0L; sbk <- NULL
+    if (isTRUE(getOption("SBayesEigen.blockve", FALSE))) {
+      e <- nc * w^2 / (vj + nc * lam * tau0); fb <- factor(bb[isB], levels = seq_along(kb))
+      mb <- tapply(e[isB], fb, mean); kbB <- tabulate(bb[isB], length(kb)); mb[is.na(mb)] <- 1
+      sbk <- 1 + pmax(0, mb - 1) * kbB / (kbB + 50); vj <- vj * sbk[bb]
+      message(sprintf("%sper-block noise: %d of %d blocks inflated, median %.3f, max %.3f", if (K > 1) paste0(tn[t], ": ") else "",
+                      sum(sbk > 1.001), length(sbk), stats::median(sbk), max(sbk)))
+    }
+    dT <- getOption("SBayesEigen.dropT", NULL)
+    if (!is.null(dT)) {
+      drop <- isB & lam < 1 & nc * w^2 / (vj + nc * lam * tau0) > dT; ndrop <- sum(drop); vj[drop] <- vj[drop] * 1e8
+      message(sprintf("%sdropped %d B components with lambda < 1 and n w^2 / E > %g", if (K > 1) paste0(tn[t], ": ") else "", ndrop, dT))
+    }
     if (abld) {
       ab <- .abj_setup(x, p1[use], rows[run][use], t, threshB)
       fit <- abj_vi(w, nc / vj, ab$blk, tau = mcp[[1]], a = mcp[[2]], threads = threads, h2p = h2p)
@@ -185,7 +203,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     alpha[[t]] <- rep(list(numeric(0)), length(run))
     alpha[[t]][use] <- if (abld) lapply(split(alB, rep(seq_along(kb), kb)), function(v) v[!is.na(v)]) else split(fit$alpha, rep(seq_along(kb), kb))
     par[[t]] <- list(Vg = fit$Vg, Vg_sd = fit$Vg_sd, ve = vt, kappa = kp, pi = fit$pi, sigma2 = fit$sigma2, gamma = fit$gamma,
-                     iter = fit$iter, converged = fit$converged, ldsc = ldsc, h2_prior = h2p,
+                     iter = fit$iter, converged = fit$converged, ldsc = ldsc, h2_prior = h2p, n_drop = ndrop, s_block = sbk,
                      n_snp = nrow(si), n_typed = length(x$ty), n_comp = length(w), n_block = sum(use),
                      time_fit = proc.time()[[3]] - t0,
                      # eigen-space fit: refit VI or get beta' R beta = sum(lam * alpha^2) without reading LD (eigen.bin; on ab.bin the A rows have alpha = NA)
