@@ -58,9 +58,9 @@
 # so beta_A' R_AA beta_A ~ sum beta_A^2) has a scaled-inv-chi2(nu, s^2) prior with mean nu s^2 / (nu - 2) = LDSC h2.
 # M-step: s2 = (sum_k phi (mu^2 + v) / g_k + (nu - 2) h2 / A0) / (sum phi_nonzero + nu + 2), A0 = mean(g) * S.
 # Both parts are centred at h2, so the prior expectation of the total Vg is about 2 h2 (the data decide the split).
-# nu: options(SBayesEigen.nuA = 50, SBayesEigen.nuB = 4) (> 2); nuA = 0 turns the A prior off (old plain M-step).
+# nu: options(SBayesEigen.nuA = 16 (Yihe 06:45; was 50), SBayesEigen.nuB = 4) (> 2); nuA = 0 turns the A prior off (old plain M-step).
 .abc_nu <- function(part) {
-  nu <- getOption(paste0("SBayesEigen.nu", part), if (part == "A") 50 else 4)
+  nu <- getOption(paste0("SBayesEigen.nu", part), if (part == "A") 16 else 4)
   if (!(part == "A" && nu == 0) && !(is.numeric(nu) && nu > 2)) stop("SBayesEigen.nu", part, " must be > 2", if (part == "A") " (or 0)")
   nu
 }
