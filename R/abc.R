@@ -195,11 +195,11 @@ abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_co
     if (it > 3 && abs(vg - vg_old) < tol * vg && s$dz < stopz && dh < .abc_const$tolB) break
     vg_old <- vg
   }
-  # Pratt split (Yihe 2026-10-10 06:31): V_k = f_k' f_all = beta_k' R beta, sums to Vg; own squares and crosses kept for debugging
-  # second version (pending Yihe's choice): moment version against the GWAS, beta_k' bhat = f_k' w (share = / beta' bhat)
+  # Pratt split (Yihe 2026-10-10 06:33): moment version with the GWAS as y, V_k = beta_k' bhat = f_k' w (no LD needed),
+  # share = V_k / beta' bhat. Vg_parts (debug): own squares, crosses (x2), and the LD version beta_k' R beta (sums to Vg).
   pt <- .abj_parts(blk, mA, al, gC, w)
-  list(alpha = al, mA = mA, gC = gC, sb = if (brho) sb, Vg = vg, Vg_A = pt[["A"]] + (pt[["AB"]] + pt[["AC"]]) / 2,
-       Vg_B = pt[["B"]] + (pt[["AB"]] + pt[["BC"]]) / 2, Vg_C = pt[["C"]] + (pt[["AC"]] + pt[["BC"]]) / 2,
-       Vg_bhat = pt[c("wA", "wB", "wC")], Vg_parts = pt[1:6], piA = piA, s2A = s2A, piB = piB, s2B = s2B,
+  list(alpha = al, mA = mA, gC = gC, sb = if (brho) sb, Vg = vg, Vg_A = pt[["wA"]], Vg_B = pt[["wB"]], Vg_C = pt[["wC"]],
+       Vg_parts = c(pt[1:6], RA = pt[["A"]] + (pt[["AB"]] + pt[["AC"]]) / 2, RB = pt[["B"]] + (pt[["AB"]] + pt[["BC"]]) / 2,
+                    RC = pt[["C"]] + (pt[["AC"]] + pt[["BC"]]) / 2), piA = piA, s2A = s2A, piB = piB, s2B = s2B,
        fitw = w - r, nB_fit = sum(fB), nA = nA, nC_cand = nCc, nC = sum(unlist(gC) != 0), iter = it, converged = it < maxit)
 }

@@ -215,10 +215,10 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
                     if (identical(kappa, "mom")) " (MoM)" else "", fit$iter, fit$Vg, fit$Vg_sd))
     tl <- if (K > 1) paste0(tn[t], ": ") else ""
     if (identical(kappa, "mom") && vt < 1) message(sprintf("%snote: MoM ve0 = %.3f < 1 (N overstated or sample overlap?)", tl, vt))
-    if (abld) message(sprintf("%sABC on ab.bin: %d A SNPs (stored annotation set), %d of %d C candidates selected (MCP tau = %g, a = %g); B fitted on %d of %d components; Vg_A = %.4f, Vg_B = %.4f, Vg_C = %.4f (Pratt, beta_k' R beta); beta_k' bhat = %.4f, %.4f, %.4f (shares %.3f, %.3f, %.3f)",
+    if (abld) message(sprintf("%sABC on ab.bin: %d A SNPs (stored annotation set), %d of %d C candidates selected (MCP tau = %g, a = %g); B fitted on %d of %d components; Pratt beta_k' bhat: A %.4f, B %.4f, C %.4f (shares %.3f, %.3f, %.3f)",
                               if (K > 1) paste0(tn[t], ": ") else "", fit$nA, fit$nC, fit$nC_cand, mcp[[1]], mcp[[2]],
-                              fit$nB_fit, sum(isB), fit$Vg_A, fit$Vg_B, fit$Vg_C, fit$Vg_bhat[1], fit$Vg_bhat[2], fit$Vg_bhat[3],
-                              fit$Vg_bhat[1] / sum(fit$Vg_bhat), fit$Vg_bhat[2] / sum(fit$Vg_bhat), fit$Vg_bhat[3] / sum(fit$Vg_bhat)))
+                              fit$nB_fit, sum(isB), fit$Vg_A, fit$Vg_B, fit$Vg_C, fit$Vg_A / (fit$Vg_A + fit$Vg_B + fit$Vg_C),
+                              fit$Vg_B / (fit$Vg_A + fit$Vg_B + fit$Vg_C), fit$Vg_C / (fit$Vg_A + fit$Vg_B + fit$Vg_C)))
     else if (abc) message(sprintf("%sABC: %d A SNPs (annotation, |z| > %g, r2 < %g leads), %d of %d C candidates selected (MCP tau = %g, a = %g); Vg_B = %.4f",
                              if (K > 1) paste0(tn[t], ": ") else "", fit$nA, .abc_const$zA, .abc_const$r2A, fit$nC, fit$nC_cand,
                              mcp[[1]], mcp[[2]], fit$Vg_B))
@@ -234,7 +234,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
                                        ve = vj, w = w, alpha = fit$alpha))
     if (abc) {
       par[[t]]$abc <- abc_tab
-      par[[t]]$abc_fit <- fit[intersect(c("Vg_A", "Vg_B", "Vg_C", "Vg_bhat", "Vg_parts", "piA", "s2A", "nA", "nC_cand", "nC", "nB_fit", "threshB", "pv"), names(fit))]
+      par[[t]]$abc_fit <- fit[intersect(c("Vg_A", "Vg_B", "Vg_C", "Vg_parts", "piA", "s2A", "nA", "nC_cand", "nC", "nB_fit", "threshB", "pv"), names(fit))]
       add[[t]] <- abc_tab[beta_std != 0]
     }
   }
