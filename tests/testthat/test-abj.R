@@ -210,3 +210,22 @@ test_that("abj_vi: B hyperparameters learn when the moment start of s2B is negat
   expect_gt(max(abs(f$piB - 0.25)), 0.05)
   expect_gt(f$Vg_B, 0.005)
 })
+
+test_that("prs_cor: b1' R b2 / sqrt(...) with R = F F' from the ab.bin files, allele flips and missing SNPs", {
+  fx <- ab_fixture(); si <- fx$si; m <- nrow(si)
+  set.seed(4); b1 <- rnorm(m) * (runif(m) < 0.3); b2 <- b1 + rnorm(m, 0, 0.05) * (b1 != 0)
+  R <- matrix(0, m, m)
+  for (b in unique(si$Block)) {
+    i <- which(si$Block == b); P <- ab_pieces(SBayesEigen:::.read_ab(file.path(fx$ld, paste0("block", b, ".ab.bin"))))
+    R[i, i] <- tcrossprod(P$F)
+  }
+  ex <- function(x, y) sum(x * (R %*% y)) / sqrt(sum(x * (R %*% x)) * sum(y * (R %*% y)))
+  x1 <- data.table::data.table(SNP = si$ID, A1 = si$A1, beta_std = b1)
+  x2 <- data.table::data.table(SNP = si$ID, A1 = si$A2, beta_std = -b2)[-(1:5)]   # flipped alleles, 5 SNPs missing
+  b2m <- b2; b2m[1:5] <- 0
+  o <- SBayesEigen:::prs_cor(x1, x2, fx$ld)
+  expect_equal(o$r, ex(b1, b2m), tolerance = 1e-5)
+  expect_equal(o$total$bRb_1, sum(b1 * (R %*% b1)), tolerance = 1e-5)
+  expect_equal(SBayesEigen:::prs_cor(x1, x1, fx$ld, threads = 2)$r, 1)
+  expect_equal(nrow(o$by_chr), 1L)
+})
