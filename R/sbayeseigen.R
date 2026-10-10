@@ -29,7 +29,7 @@
 #' @param ve Residual variance: a number (default 1) or \code{"ldsc"} for the LDSC intercept
 #'   clamped to [0.9, 2]. Not used when \code{kappa = "mom"}, which estimates it.
 #' @param kappa LD-mismatch noise: the residual variance of eigen component j is
-#'   \eqn{ve_0 + \kappa / \lambda_j}. \code{"mom"} (default) estimates \eqn{ve_0} (within [0.5, 1.5])
+#'   \eqn{ve_0 + \kappa / \lambda_j}. \code{"mom"} (default) estimates \eqn{ve_0} (within [0.5, 3])
 #'   and \eqn{\kappa \ge 0} by moments on the components with \eqn{\lambda < 1} (100 bins, LDSC
 #'   signal subtracted); a number fixes \eqn{\kappa} with \eqn{ve_0} = \code{ve}; 0 gives the
 #'   constant residual variance \code{ve}.
@@ -155,7 +155,8 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     # B component has E[n w^2] = vj + n lam tau0, tau0 = h2p / sum(lam_B) (Vg_B = LDSC h2), so signal shrinks with lam.
     # options(SBayesEigen.blockve = TRUE): fixed per-block noise multiplier s_b = 1 + max(0, mean_b(n w^2 / E) - 1)
     #   k_b / (k_b + 50) from the block's B components (only inflation), applied to all its components.
-    # options(SBayesEigen.dropT = 30): B components with lam < 1 and n w^2 / E > dropT get precision ~0 (out of the fit).
+    # options(SBayesEigen.dropT = 30): B components with lam < 1 and n w^2 / E > dropT get precision ~0 (out of the fit;
+    #   also the components beyond threshB, so C does not chase them).
     bb <- rep(seq_along(kb), kb); tau0 <- h2p / sum(lam[isB]); ndrop <- 0L; sbk <- NULL
     if (isTRUE(getOption("SBayesEigen.blockve", FALSE))) {
       e <- nc * w^2 / (vj + nc * lam * tau0); fb <- factor(bb[isB], levels = seq_along(kb))
@@ -166,8 +167,12 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     }
     dT <- getOption("SBayesEigen.dropT", NULL)
     if (!is.null(dT)) {
-      drop <- isB & lam < 1 & nc * w^2 / (vj + nc * lam * tau0) > dT; ndrop <- sum(drop); vj[drop] <- vj[drop] * 1e8
-      message(sprintf("%sdropped %d B components with lambda < 1 and n w^2 / E > %g", if (K > 1) paste0(tn[t], ": ") else "", ndrop, dT))
+      # options(SBayesEigen.dropLam = "median"): only components below their block's median B lambda (default lambda < 1)
+      dl <- getOption("SBayesEigen.dropLam", 1)
+      small <- if (identical(dl, "median")) lam < ave(ifelse(isB, lam, NA), bb, FUN = function(v) stats::median(v, na.rm = TRUE)) else lam < dl
+      drop <- isB & small & nc * w^2 / (vj + nc * lam * tau0) > dT; ndrop <- sum(drop); vj[drop] <- vj[drop] * 1e8
+      message(sprintf("%sdropped %d B components (lambda < %s, n w^2 / E > %g) in %d blocks", if (K > 1) paste0(tn[t], ": ") else "",
+                      ndrop, if (identical(dl, "median")) "block median" else format(dl), dT, length(unique(bb[drop]))))
     }
     if (abld) {
       ab <- .abj_setup(x, p1[use], rows[run][use], t, threshB)
@@ -177,7 +182,8 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
       abc_tab <- data.table(SNP = si$SNP[c(unlist(ab$snpA), unlist(ab$snpC))],
                             Block = c(rep(names(rows)[run][use], lengths(ab$snpA)), rep(names(rows)[run][use], lengths(ab$snpC))),
                             set = rep(c("A", "C"), c(length(unlist(ab$snpA)), length(unlist(ab$snpC)))),
-                            z = c(unlist(ab$zA), unlist(ab$zC)), beta_std = c(unlist(fit$mA), unlist(fit$gC)))
+                            z = c(unlist(ab$zA), unlist(ab$zC)), beta_std = c(unlist(fit$mA), unlist(fit$gC)),
+                            frac_trunc = c(rep(NA_real_, length(unlist(ab$snpA))), .abj_ctrunc(ab$blk, nc / vj)))
       fit$alpha <- unlist(lapply(seq_along(kb), function(j) c(rep(NA_real_, p1[use][[j]]$rankA), fit$alpha[[j]])))
       alB <- fit$alpha
     } else if (abc) {
@@ -365,6 +371,16 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
 }
 
 # one trait's ab.bin ABC design in the blocks it uses: the trait's C candidates among the union rows of pass 1
+# C diagnostic: share of each C candidate's precision-weighted signal (its D) on the B components beyond threshB
+# (alpha fixed at 0 there), i.e. how much of what C can fit lies in the truncated directions
+.abj_ctrunc <- function(blk, p) {
+  rk <- vapply(blk, function(x) nrow(x$XA), 0L); kB <- lengths(lapply(blk, `[[`, "sl")); off <- c(0, cumsum(rk + kB))
+  unlist(lapply(seq_along(blk), function(b) { x <- blk[[b]]; if (!ncol(x$XCb)) return(numeric(0))
+    pa <- p[off[b] + seq_len(rk[b])]; pb <- p[off[b] + rk[b] + seq_len(kB[b])]; nB <- if (is.null(x$nB)) kB[b] else x$nB
+    e <- x$XCb^2 * pb; D <- colSums(e) + (if (rk[b]) colSums(x$XCa^2 * pa) else 0)
+    (if (nB < kB[b]) colSums(e[-seq_len(nB), , drop = FALSE]) else 0) / D }))
+}
+
 .abj_setup <- function(x, p1b, rr, t, threshB = NULL) {
   bi <- match(names(rr), names(x$ti))
   out <- list(blk = list(), snpA = list(), snpC = list(), zA = list(), zC = list())

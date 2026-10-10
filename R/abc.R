@@ -42,11 +42,12 @@
   mom <- sum((p * w^2 - 1) * p * c^2) / sum((p * c^2)^2)
   max(mom, (if (is.null(h2p)) 1e-8 else h2p) / sum(c^2))
 }
-# Diagnostic switch (not exported; real-data chr1 ablation 2026-10-07): options(SBayesEigen.bprior = "eigen") gives B
-# the eigen-VI prior (grid 0/1e-4/.../1, scaled-inv-chi2 on tau centred at the LDSC h2) and
+# B prior (default since 2026-10-10, HPC: the eigen-VI prior recovered Vg on every trait and was insensitive to its centre
+# x0.25 / x4, while 0/1/100/500 left pi_B uniform): grid 0/1e-4/.../1, scaled-inv-chi2 (nu 4) on tau centred at the
+# LDSC h2. options(SBayesEigen.bprior = "flat") restores the old 0/1/100/500 grid without a prior;
 # options(SBayesEigen.nemB = k) runs k plain EM maps of B's hyperparameters per iteration instead of SQUAREM-EM to convergence (whole-U ABC only; diagnostic).
 .abc_bprior <- function(h2p, sc2) {
-  if (!identical(getOption("SBayesEigen.bprior", "flat"), "eigen") || is.null(h2p))
+  if (identical(getOption("SBayesEigen.bprior", "eigen"), "flat") || is.null(h2p))
     return(list(gB = .abc_const$gB, s2p = 0, nu = -2, A0 = 1))
   gB <- c(0, 1e-4, 1e-3, 1e-2, 1e-1, 1)
   list(gB = gB, s2p = 2 * h2p, nu = 4, A0 = mean(gB) * sc2)
