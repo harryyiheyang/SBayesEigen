@@ -127,6 +127,7 @@ test_that("sbayeseigen on ab.bin: joint ABC, beta = A effects + Q2 alpha + gamma
   expect_gt(acc(fb9$snpRes$beta_std), 0.85)
   af <- fit$par$abc_fit; expect_equal(af$Vg_A + af$Vg_B + af$Vg_C, fit$par$Vg, tolerance = 1e-8)
   expect_equal(sum(af$Vg_parts), fit$par$Vg, tolerance = 1e-8)
+  expect_length(af$Vg_bhat, 3)
   ct <- fb9$par$abc[set == "C"]$frac_trunc; expect_true(all(ct >= 0 & ct <= 1))
   expect_true(all(fit$par$abc[set == "C"]$frac_trunc == 0)); expect_true(all(is.na(fit$par$abc[set == "A"]$frac_trunc)))
   # threshB = "auto": pseudo-validation over 0.995/0.99/0.95/0.9, reproducible, chosen value used
@@ -209,7 +210,9 @@ test_that("abj_vi: B hyperparameters learn when the moment start of s2B is negat
   w <- sl * al + rnorm(M) * sqrt(0.55 / n); p <- rep(n / 0.9, M)   # noise overstated: moment start < 0
   expect_lt(sum((p * w^2 - 1) * p * sl^2), 0)
   f <- SBayesEigen:::abj_vi(w, p, blk, threads = 2, h2p = 0.1)
-  expect_gt(max(abs(f$piB - 0.25)), 0.05)
+  expect_gt(max(abs(f$piB - 1 / length(f$piB))), 0.05)
+  expect_equal(sum(f$Vg_bhat), sum(f$fitw * w), tolerance = 1e-8)
+  expect_equal(f$Vg_A + f$Vg_B + f$Vg_C, f$Vg, tolerance = 1e-8)
   expect_gt(f$Vg_B, 0.005)
 })
 

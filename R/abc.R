@@ -137,13 +137,16 @@ abc_vi <- function(w, c, p, kb, X, role, tau = 5, a = 2.5, gA = .abc_const$gA, g
 
 # whitened fit of each part per block (A rows | B rows): A = (XA m_A | 0), B = (Cm alpha | sl alpha),
 # C = (XCa gamma | XCb gamma); Vg = |fA + fB + fC|^2 = Vg_A + Vg_B + Vg_C + 2 (fA'fB + fA'fC + fB'fC) (crosses reported x2)
-.abj_parts <- function(blk, mA, al, gC) {
+.abj_parts <- function(blk, mA, al, gC, w = NULL) {
+  rk0 <- vapply(blk, function(x) nrow(x$XA), 0L); off <- c(0, cumsum(rk0 + lengths(lapply(blk, `[[`, "sl"))))
   o <- vapply(seq_along(blk), function(b) { x <- blk[[b]]; rk <- nrow(x$XA)
     fA <- c(if (rk) drop(x$XA %*% mA[[b]]) else numeric(0), numeric(length(x$sl)))
     fB <- c(if (rk) drop(x$Cm %*% al[[b]]) else numeric(0), x$sl * al[[b]])
     fC <- if (ncol(x$XCb)) c(if (rk) drop(x$XCa %*% gC[[b]]) else numeric(0), drop(x$XCb %*% gC[[b]])) else 0 * fB
-    c(A = sum(fA^2), B = sum(fB^2), C = sum(fC^2), AB = 2 * sum(fA * fB), AC = 2 * sum(fA * fC), BC = 2 * sum(fB * fC)) },
-    numeric(6))
+    wb <- if (is.null(w)) 0 * fA else w[off[b] + seq_along(fA)]
+    c(A = sum(fA^2), B = sum(fB^2), C = sum(fC^2), AB = 2 * sum(fA * fB), AC = 2 * sum(fA * fC), BC = 2 * sum(fB * fC),
+      wA = sum(fA * wb), wB = sum(fB * wb), wC = sum(fC * wb)) },
+    numeric(9))
   rowSums(o)
 }
 
@@ -193,8 +196,10 @@ abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_co
     vg_old <- vg
   }
   # Pratt split (Yihe 2026-10-10 06:31): V_k = f_k' f_all = beta_k' R beta, sums to Vg; own squares and crosses kept for debugging
-  pt <- .abj_parts(blk, mA, al, gC)
+  # second version (pending Yihe's choice): moment version against the GWAS, beta_k' bhat = f_k' w (share = / beta' bhat)
+  pt <- .abj_parts(blk, mA, al, gC, w)
   list(alpha = al, mA = mA, gC = gC, sb = if (brho) sb, Vg = vg, Vg_A = pt[["A"]] + (pt[["AB"]] + pt[["AC"]]) / 2,
-       Vg_B = pt[["B"]] + (pt[["AB"]] + pt[["BC"]]) / 2, Vg_C = pt[["C"]] + (pt[["AC"]] + pt[["BC"]]) / 2, Vg_parts = pt, piA = piA, s2A = s2A, piB = piB, s2B = s2B,
+       Vg_B = pt[["B"]] + (pt[["AB"]] + pt[["BC"]]) / 2, Vg_C = pt[["C"]] + (pt[["AC"]] + pt[["BC"]]) / 2,
+       Vg_bhat = pt[c("wA", "wB", "wC")], Vg_parts = pt[1:6], piA = piA, s2A = s2A, piB = piB, s2B = s2B,
        fitw = w - r, nB_fit = sum(fB), nA = nA, nC_cand = nCc, nC = sum(unlist(gC) != 0), iter = it, converged = it < maxit)
 }
