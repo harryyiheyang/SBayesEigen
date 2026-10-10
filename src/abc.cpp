@@ -172,7 +172,7 @@ List abj_sweep_cpp(List blk, IntegerVector off, NumericVector p, NumericVector r
 
 // pass 2 on ab.bin: beta_B = Q2 alpha on the B rows (A rows 0; the caller adds beta_A and gamma), K traits per sweep
 // [[Rcpp::export]]
-List ab_beta_cpp(CharacterVector files, List alpha, int threads) {
+List ab_beta_cpp(CharacterVector files, List alpha, double thresh, int threads) {
   const int nb = files.size(), K = alpha.size();
   std::vector<std::string> fs(nb);
   for (int b = 0; b < nb; b++) fs[b] = as<std::string>(files[b]);
@@ -183,6 +183,7 @@ List ab_beta_cpp(CharacterVector files, List alpha, int threads) {
   for (int b = 0; b < nb; b++) {
     AbFile f;
     if (!f.open(fs[b])) { err[b] = 1; continue; }
+    f.cut(thresh);
     std::vector<char> isA(f.m, 0);
     for (int q = 0; q < f.mA; q++) isA[f.idxA[q]] = 1;
     for (int t = 0; t < K; t++) {

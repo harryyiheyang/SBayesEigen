@@ -62,15 +62,16 @@ BEGIN_RCPP
 END_RCPP
 }
 // ab_beta_cpp
-List ab_beta_cpp(CharacterVector files, List alpha, int threads);
-RcppExport SEXP _SBayesEigen_ab_beta_cpp(SEXP filesSEXP, SEXP alphaSEXP, SEXP threadsSEXP) {
+List ab_beta_cpp(CharacterVector files, List alpha, double thresh, int threads);
+RcppExport SEXP _SBayesEigen_ab_beta_cpp(SEXP filesSEXP, SEXP alphaSEXP, SEXP threshSEXP, SEXP threadsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< CharacterVector >::type files(filesSEXP);
     Rcpp::traits::input_parameter< List >::type alpha(alphaSEXP);
+    Rcpp::traits::input_parameter< double >::type thresh(threshSEXP);
     Rcpp::traits::input_parameter< int >::type threads(threadsSEXP);
-    rcpp_result_gen = Rcpp::wrap(ab_beta_cpp(files, alpha, threads));
+    rcpp_result_gen = Rcpp::wrap(ab_beta_cpp(files, alpha, thresh, threads));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -95,8 +96,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // ab_pass1_cpp
-Rcpp::List ab_pass1_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcpp::List z, Rcpp::List n_typed, Rcpp::NumericVector n_missing, Rcpp::List rows, int threads);
-RcppExport SEXP _SBayesEigen_ab_pass1_cpp(SEXP filesSEXP, SEXP typed_indexSEXP, SEXP zSEXP, SEXP n_typedSEXP, SEXP n_missingSEXP, SEXP rowsSEXP, SEXP threadsSEXP) {
+Rcpp::List ab_pass1_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcpp::List z, Rcpp::List n_typed, Rcpp::NumericVector n_missing, Rcpp::List rows, double thresh, int threads);
+RcppExport SEXP _SBayesEigen_ab_pass1_cpp(SEXP filesSEXP, SEXP typed_indexSEXP, SEXP zSEXP, SEXP n_typedSEXP, SEXP n_missingSEXP, SEXP rowsSEXP, SEXP threshSEXP, SEXP threadsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -106,8 +107,9 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< Rcpp::List >::type n_typed(n_typedSEXP);
     Rcpp::traits::input_parameter< Rcpp::NumericVector >::type n_missing(n_missingSEXP);
     Rcpp::traits::input_parameter< Rcpp::List >::type rows(rowsSEXP);
+    Rcpp::traits::input_parameter< double >::type thresh(threshSEXP);
     Rcpp::traits::input_parameter< int >::type threads(threadsSEXP);
-    rcpp_result_gen = Rcpp::wrap(ab_pass1_cpp(files, typed_index, z, n_typed, n_missing, rows, threads));
+    rcpp_result_gen = Rcpp::wrap(ab_pass1_cpp(files, typed_index, z, n_typed, n_missing, rows, thresh, threads));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -207,9 +209,9 @@ END_RCPP
 static const R_CallMethodDef CallEntries[] = {
     {"_SBayesEigen_abc_sweep_cpp", (DL_FUNC) &_SBayesEigen_abc_sweep_cpp, 14},
     {"_SBayesEigen_abj_sweep_cpp", (DL_FUNC) &_SBayesEigen_abj_sweep_cpp, 16},
-    {"_SBayesEigen_ab_beta_cpp", (DL_FUNC) &_SBayesEigen_ab_beta_cpp, 3},
+    {"_SBayesEigen_ab_beta_cpp", (DL_FUNC) &_SBayesEigen_ab_beta_cpp, 4},
     {"_SBayesEigen_impute_blocks_eigen_cpp", (DL_FUNC) &_SBayesEigen_impute_blocks_eigen_cpp, 10},
-    {"_SBayesEigen_ab_pass1_cpp", (DL_FUNC) &_SBayesEigen_ab_pass1_cpp, 7},
+    {"_SBayesEigen_ab_pass1_cpp", (DL_FUNC) &_SBayesEigen_ab_pass1_cpp, 8},
     {"_SBayesEigen_ld_build_cpp", (DL_FUNC) &_SBayesEigen_ld_build_cpp, 11},
     {"_SBayesEigen_tidy_cpp", (DL_FUNC) &_SBayesEigen_tidy_cpp, 8},
     {"_SBayesEigen_eig_beta_cpp", (DL_FUNC) &_SBayesEigen_eig_beta_cpp, 4},

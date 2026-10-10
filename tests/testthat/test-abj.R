@@ -26,7 +26,7 @@ test_that("ab.bin pass 1: imputation with R ~ F F', w_A = H' bhat_A, w_B = Lambd
     f <- SBayesEigen:::.read_ab(file.path(fx$ld, paste0("block", b, ".ab.bin"))); P <- ab_pieces(f)
     zb <- z[si$Block == b]; ty <- sort(sample(f$m, 0.8 * f$m)); cr <- c(0L, 3L, 7L, 40L)
     o <- SBayesEigen:::ab_pass1_cpp(file.path(fx$ld, paste0("block", b, ".ab.bin")), list(list(ty - 1L)), list(list(zb[ty])),
-                                    list(list(rep(N, length(ty)))), N, list(cr), 1)[[1]]
+                                    list(list(rep(N, length(ty)))), N, list(cr), 1, 1)[[1]]
     R <- tcrossprod(P$F)
     zm <- R[-ty, ty] %*% solve(R[ty, ty] + 0.1 * diag(length(ty)), zb[ty])
     expect_equal(o$z[[1]], drop(zm), tolerance = 1e-3)
@@ -103,6 +103,17 @@ test_that("sbayeseigen on ab.bin: joint ABC, beta = A effects + Q2 alpha + gamma
   acc <- function(x) sum(x * (R %*% beta)) / sqrt(sum(x * (R %*% x)) * sum(beta * (R %*% beta)))
   expect_gt(acc(fit$snpRes$beta_std), 0.89)   # 0.9002 at 0ea0e9a, 0.8999 with the capped B EM
   expect_error(suppressMessages(sbayeseigen(ma, fx$ld, method = "eigen")), "ab.bin")
+  # thresh truncates B at read time (leading components reaching thresh of the Schur complement's mass)
+  f9 <- suppressMessages(sbayeseigen(ma, fx$ld, threads = 2, thresh = 0.9)); cp9 <- f9$par$comp; bs9 <- numeric(m)
+  expect_lt(sum(!is.na(cp9$alpha)), sum(!is.na(cp$alpha)))
+  for (b in unique(si$Block)) {
+    fb <- SBayesEigen:::.read_ab(file.path(fx$ld, paste0("block", b, ".ab.bin"))); a <- cp9[Block == b & !is.na(alpha)]$alpha
+    k <- which(cumsum(fb$lambda) >= 0.9 * fb$sumLambda)[1]; expect_length(a, k)
+    x <- drop(fb$UlB[, seq_len(k), drop = FALSE] %*% a); x[fb$iA] <- 0; bs9[si$Block == b] <- x
+  }
+  i <- match(f9$par$abc$SNP, si$ID); bs9[i] <- bs9[i] + f9$par$abc$beta_std
+  expect_equal(f9$snpRes$beta_std, bs9, tolerance = 1e-5)
+  expect_equal(suppressMessages(sbayeseigen(ma, fx$ld, threads = 2, thresh = 1))$snpRes$beta_std, fit$snpRes$beta_std, tolerance = 1e-6)
 })
 
 test_that("ab.bin: a block whose SNPs are all in A (no B components) gives zero U alpha there, not recycled values", {

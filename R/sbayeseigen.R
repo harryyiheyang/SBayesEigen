@@ -33,7 +33,9 @@
 #'   and \eqn{\kappa \ge 0} by moments on the components with \eqn{\lambda < 1} (100 bins, LDSC
 #'   signal subtracted); a number fixes \eqn{\kappa} with \eqn{ve_0} = \code{ve}; 0 gives the
 #'   constant residual variance \code{ve}.
-#' @param thresh Proportion of eigenvalue mass kept per block.
+#' @param thresh Proportion of eigenvalue mass kept per block. On ab.bin LD it truncates B at read time to the leading
+#'   components reaching \code{thresh} of the Schur complement's positive eigenvalue mass (A is not affected);
+#'   values at or above the build threshold keep every stored component.
 #' @param tol VI stops when the posterior genetic variance changes by less than \code{tol}
 #'   (relative) in two consecutive iterations (\code{method = "eigen"}; ABC uses 5e-4 together with
 #'   a 0.05 z-unit change of the C effects).
@@ -113,7 +115,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
   if (abld && !file.exists(lf)) stop("ab.bin LD needs ldscore.txt (written by LDbuild)")
   if (!file.exists(lf)) message("ldscore.txt not found; LD scores computed from the eigen files in pass 1")
   p1 <- if (abld) ab_pass1_cpp(files, lapply(inp, function(x) x$ti[run]), lapply(inp, function(x) x$z[run]),
-                               lapply(inp, function(x) x$n[run]), vapply(inp, `[[`, 0, "nmiss"), lapply(crow, as.integer), threads) else
+                               lapply(inp, function(x) x$n[run]), vapply(inp, `[[`, 0, "nmiss"), lapply(crow, as.integer), thresh, threads) else
         impute_blocks_eigen_cpp(files, lapply(inp, function(x) x$ti[run]), lapply(inp, function(x) x$z[run]),
                                 lapply(inp, function(x) x$n[run]), vapply(inp, `[[`, 0, "nmiss"), thresh, threads,
                                 TRUE, !file.exists(lf), if (abc) lapply(crow, as.integer) else list())
@@ -192,7 +194,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
   tm["fit"] <- proc.time()[[3]]
 
   # ---- pass 2, all traits per block: beta = U E[alpha] ----
-  p2 <- if (abld) ab_beta_cpp(files, alpha, threads) else eig_beta_cpp(files, alpha, thresh, threads)
+  p2 <- if (abld) ab_beta_cpp(files, alpha, thresh, threads) else eig_beta_cpp(files, alpha, thresh, threads)
   tm["pass2"] <- proc.time()[[3]]
   message("Time (s", if (K > 1) paste0(", whole batch of ", K, " traits"), "): ",
           paste(names(diff(tm)), sprintf("%.1f", diff(tm)), sep = " ", collapse = ", "),

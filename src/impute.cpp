@@ -266,7 +266,7 @@ struct AbResult {
 
 // [[Rcpp::export]]
 Rcpp::List ab_pass1_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcpp::List z, Rcpp::List n_typed,
-                        Rcpp::NumericVector n_missing, Rcpp::List rows, int threads) {
+                        Rcpp::NumericVector n_missing, Rcpp::List rows, double thresh, int threads) {
   using Eigen::MatrixXd;
   using Eigen::VectorXd;
   const float diag_mod = 0.1f;
@@ -298,6 +298,7 @@ Rcpp::List ab_pass1_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcp
     try {
       AbFile f;
       if (!f.open(fs[b])) throw std::runtime_error("cannot read " + fs[b]);
+      f.cut(thresh);
       const int m = f.m, mA = f.mA, mB = m - mA, kB = f.kB;
       r.mA = mA; r.kB = kB;
       std::vector<int> isA(m, -1), posB(m, -1);

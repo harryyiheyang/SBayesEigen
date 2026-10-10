@@ -8,6 +8,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include "eig_file.h"
 #ifndef _WIN32
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -70,6 +71,9 @@ struct AbFile {
     RBA = reinterpret_cast<const float*>(cur);
     return true;
   }
+  // keep the leading B components reaching thresh of the Schur complement's positive eigenvalue mass (as eig_cut;
+  // no-op at or above the file's own cutB). UlB is column-major, so its first kB columns stay contiguous.
+  void cut(double thresh) { kB = eig_cut(lam, kB, sumLambda, cutB, thresh); }
   ~AbFile() {
 #ifndef _WIN32
     if (mapped_) munmap(const_cast<char*>(base_), len_);

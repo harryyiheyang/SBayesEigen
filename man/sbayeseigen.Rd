@@ -48,7 +48,9 @@ and \eqn{\kappa \ge 0} by moments on the components with \eqn{\lambda < 1} (100 
 signal subtracted); a number fixes \eqn{\kappa} with \eqn{ve_0} = \code{ve}; 0 gives the
 constant residual variance \code{ve}.}
 
-\item{thresh}{Proportion of eigenvalue mass kept per block.}
+\item{thresh}{Proportion of eigenvalue mass kept per block. On ab.bin LD it truncates B at read time to the leading
+components reaching \code{thresh} of the Schur complement's positive eigenvalue mass (A is not affected);
+values at or above the build threshold keep every stored component.}
 
 \item{tol}{VI stops when the posterior genetic variance changes by less than \code{tol}
 (relative) in two consecutive iterations (\code{method = "eigen"}; ABC uses 5e-4 together with
