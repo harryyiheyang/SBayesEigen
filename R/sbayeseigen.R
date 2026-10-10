@@ -39,7 +39,9 @@
 #' @param threshB ab.bin only: B (eigen-space) effects are fitted only on the leading components reaching
 #'   \code{threshB} of the Schur complement's positive eigenvalue mass; the remaining stored components keep
 #'   \eqn{\alpha = 0} but stay in the data, so A and C are fitted in the whole \code{thresh} space (Yihe
-#'   2026-10-10: e.g. \code{threshB = 0.95}, the rest left to C). \code{NULL} fits B on every component.
+#'   2026-10-10: e.g. \code{threshB = 0.95}, the rest left to C). \code{NULL} fits B on every component;
+#'   \code{"auto"} picks it from 0.995/0.99/0.95/0.9 by pseudo-validation (90/10 split of the summary data in
+#'   component space; a lower value only when its score is > 25\% higher), at about 5 times the fitting time.
 #' @param tol VI stops when the posterior genetic variance changes by less than \code{tol}
 #'   (relative) in two consecutive iterations (\code{method = "eigen"}; ABC uses 5e-4 together with
 #'   a 0.05 z-unit change of the C effects).
@@ -74,7 +76,8 @@
 sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", thresh = 0.995, tol = 1e-4,
                         method = c("abc", "eigen"), annot = NULL, mcp = c(tau = 5, a = 2.5), beta_ref = FALSE, threshB = NULL) {
   method <- match.arg(method)
-  if (!is.null(threshB) && !(is.numeric(threshB) && length(threshB) == 1 && threshB > 0 && threshB <= 1)) stop("threshB must be in (0, 1]")
+  if (!is.null(threshB) && !identical(threshB, "auto") && !(is.numeric(threshB) && length(threshB) == 1 && threshB > 0 && threshB <= 1))
+    stop("threshB must be NULL, \"auto\" or in (0, 1]")
   if (!is.null(names(mcp)) && all(c("tau", "a") %in% names(mcp))) mcp <- mcp[c("tau", "a")]
   if (length(mcp) != 2 || mcp[[1]] <= 0 || mcp[[2]] <= 1) stop("mcp must be c(tau = > 0, a = > 1)")
   # messages still go to the console; with out they are also written to <prefix>.log per trait
@@ -175,8 +178,18 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
                       ndrop, if (identical(dl, "median")) "block median" else format(dl), dT, length(unique(bb[drop]))))
     }
     if (abld) {
-      ab <- .abj_setup(x, p1[use], rows[run][use], t, threshB)
+      ab <- .abj_setup(x, p1[use], rows[run][use], t)
+      pv <- NULL; thB <- threshB
+      if (identical(threshB, "auto")) {
+        pv <- .abj_pseudo_threshB(w, nc / vj, ab$blk, mcp, threads, h2p); thB <- pv$threshB
+        message(sprintf("%spseudo-validation of threshB: %s; chosen %s", if (K > 1) paste0(tn[t], ": ") else "",
+                        paste(sprintf("%g: %.4f", pv$grid, pv$score), collapse = ", "), if (is.null(thB)) "all" else format(thB)))
+      }
+      ab$blk <- .abj_nB(ab$blk, thB)
       fit <- abj_vi(w, nc / vj, ab$blk, tau = mcp[[1]], a = mcp[[2]], threads = threads, h2p = h2p)
+      fit$threshB <- if (is.null(thB)) NA_real_ else thB; fit$pv <- pv
+      if (!is.null(fit$sb)) message(sprintf("%sper-block noise (rho > 1.1): %d of %d blocks inflated, max %.2f", if (K > 1) paste0(tn[t], ": ") else "",
+                                            sum(fit$sb > 1), length(fit$sb), max(fit$sb)))
       if (!fit$converged) warning("ABC did not converge in ", fit$iter, " iterations")
       fit$Vg_sd <- NA_real_; fit$gamma <- .abc_bprior(h2p, 1)$gB; fit$pi <- fit$piB; fit$sigma2 <- fit$s2B
       abc_tab <- data.table(SNP = si$SNP[c(unlist(ab$snpA), unlist(ab$snpC))],
@@ -209,7 +222,8 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     alpha[[t]] <- rep(list(numeric(0)), length(run))
     alpha[[t]][use] <- if (abld) lapply(split(alB, rep(seq_along(kb), kb)), function(v) v[!is.na(v)]) else split(fit$alpha, rep(seq_along(kb), kb))
     par[[t]] <- list(Vg = fit$Vg, Vg_sd = fit$Vg_sd, ve = vt, kappa = kp, pi = fit$pi, sigma2 = fit$sigma2, gamma = fit$gamma,
-                     iter = fit$iter, converged = fit$converged, ldsc = ldsc, h2_prior = h2p, n_drop = ndrop, s_block = sbk,
+                     iter = fit$iter, converged = fit$converged, ldsc = ldsc, h2_prior = h2p, n_drop = ndrop,
+                     s_block = if (!is.null(fit$sb)) fit$sb else sbk,
                      n_snp = nrow(si), n_typed = length(x$ty), n_comp = length(w), n_block = sum(use),
                      time_fit = proc.time()[[3]] - t0,
                      # eigen-space fit: refit VI or get beta' R beta = sum(lam * alpha^2) without reading LD (eigen.bin; on ab.bin the A rows have alpha = NA)
@@ -217,7 +231,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
                                        ve = vj, w = w, alpha = fit$alpha))
     if (abc) {
       par[[t]]$abc <- abc_tab
-      par[[t]]$abc_fit <- fit[intersect(c("Vg_B", "piA", "s2A", "nA", "nC_cand", "nC", "nB_fit"), names(fit))]
+      par[[t]]$abc_fit <- fit[intersect(c("Vg_B", "piA", "s2A", "nA", "nC_cand", "nC", "nB_fit", "threshB", "pv"), names(fit))]
       add[[t]] <- abc_tab[beta_std != 0]
     }
   }
@@ -381,16 +395,34 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     (if (nB < kB[b]) colSums(e[-seq_len(nB), , drop = FALSE]) else 0) / D }))
 }
 
-.abj_setup <- function(x, p1b, rr, t, threshB = NULL) {
+# B fitted on the leading components reaching th of the block's Schur-complement mass (NULL: all)
+.abj_nB <- function(blk, th) lapply(blk, function(x) { lb <- x$sl^2
+  x$nB <- if (is.null(th)) NULL else min(length(lb), which(cumsum(lb) >= th * x$sumL)[1], na.rm = TRUE); x })
+
+# threshB = "auto" (benchmark thread 2026-10-10, after SBayesRC's pseudo-validation): split w into a 90% training and
+# a 10% validation sample in component space (w_t = w + sqrt((1/0.9 - 1) / p) e, w_v = (w - 0.9 w_t) / 0.1), fit on
+# w_t for each threshB, score r = fit' w_v / ||fit|| (= beta' bhat_v / sqrt(beta' R beta)); leave 0.995 (all) only
+# when the best is more than 25% higher. Fixed seed, so a rerun gives the same choice.
+.abj_pseudo_threshB <- function(w, p, blk, mcp, threads, h2p, grid = c(0.995, 0.99, 0.95, 0.9), gain = 1.25) {
+  if (exists(".Random.seed", globalenv())) { rs <- get(".Random.seed", globalenv()); on.exit(assign(".Random.seed", rs, globalenv())) }
+  set.seed(20261010); wt <- w + sqrt((1 / 0.9 - 1) / p) * stats::rnorm(length(w)); wv <- (w - 0.9 * wt) / 0.1
+  sc <- vapply(grid, function(th) {
+    f <- abj_vi(wt, 0.9 * p, .abj_nB(blk, th), tau = mcp[[1]], a = mcp[[2]], threads = threads, h2p = h2p)
+    sum(f$fitw * wv) / sqrt(sum(f$fitw^2)) }, 0)
+  b <- which.max(sc); better <- if (sc[1] > 0) sc[b] > gain * sc[1] else b != 1
+  list(grid = grid, score = sc, threshB = if (better) grid[b] else NULL)
+}
+
+.abj_setup <- function(x, p1b, rr, t) {
   bi <- match(names(rr), names(x$ti))
   out <- list(blk = list(), snpA = list(), snpC = list(), zA = list(), zC = list())
   for (j in seq_along(p1b)) {
     pb <- p1b[[j]]; ti <- x$ti[[bi[j]]] + 1L; zz <- x$z[[bi[j]]]
     q <- which(pb$crow %in% (x$cand[[bi[j]]] + 1L))
     lb <- pb$lam[pb$rankA + seq_len(ncol(pb$Cm))]
-    out$blk[[j]] <- list(XA = pb$XA, Cm = pb$Cm, sl = sqrt(lb), XCa = pb$XCa[, q, drop = FALSE], XCb = pb$XCb[, q, drop = FALSE])
-    # Yihe 2026-10-10: B fitted only up to threshB of the Schur complement's mass; A and C use the whole stored space
-    if (!is.null(threshB)) out$blk[[j]]$nB <- min(length(lb), which(cumsum(lb) >= threshB * pb$sumLambdaB)[1], na.rm = TRUE)
+    # Yihe 2026-10-10: B fitted only up to threshB of the Schur complement's mass (sumL; .abj_nB); A and C use the whole stored space
+    out$blk[[j]] <- list(XA = pb$XA, Cm = pb$Cm, sl = sqrt(lb), XCa = pb$XCa[, q, drop = FALSE], XCb = pb$XCb[, q, drop = FALSE],
+                         sumL = pb$sumLambdaB)
     out$snpA[[j]] <- rr[[j]][pb$iA]; out$zA[[j]] <- zz[match(pb$iA, ti)]
     out$snpC[[j]] <- rr[[j]][pb$crow[q]]; out$zC[[j]] <- zz[match(pb$crow[q], ti)]
   }

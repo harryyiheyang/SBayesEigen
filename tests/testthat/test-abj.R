@@ -125,6 +125,14 @@ test_that("sbayeseigen on ab.bin: joint ABC, beta = A effects + Q2 alpha + gamma
     expect_true(all(a[-seq_len(k)] == 0)); expect_true(any(a[seq_len(k)] != 0))
   }
   expect_gt(acc(fb9$snpRes$beta_std), 0.85)
+  ct <- fb9$par$abc[set == "C"]$frac_trunc; expect_true(all(ct >= 0 & ct <= 1))
+  expect_true(all(fit$par$abc[set == "C"]$frac_trunc == 0)); expect_true(all(is.na(fit$par$abc[set == "A"]$frac_trunc)))
+  # threshB = "auto": pseudo-validation over 0.995/0.99/0.95/0.9, reproducible, chosen value used
+  fa <- suppressMessages(sbayeseigen(ma, fx$ld, threads = 2, threshB = "auto")); pv <- fa$par$abc_fit$pv
+  expect_length(pv$score, 4); expect_true(all(is.finite(pv$score)))
+  fa2 <- suppressMessages(sbayeseigen(ma, fx$ld, threads = 2, threshB = "auto")); expect_equal(fa2$snpRes$beta_std, fa$snpRes$beta_std)
+  th <- fa$par$abc_fit$threshB
+  expect_equal(fa$snpRes$beta_std, suppressMessages(sbayeseigen(ma, fx$ld, threads = 2, threshB = if (is.na(th)) NULL else th))$snpRes$beta_std)
 })
 
 test_that("ab.bin: a block whose SNPs are all in A (no B components) gives zero U alpha there, not recycled values", {

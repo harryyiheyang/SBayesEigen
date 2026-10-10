@@ -134,17 +134,32 @@ abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_co
     p[off[b] + rk[b] + seq_len(kB[b])] * x$sl^2 + if (rk[b]) colSums(x$Cm^2 * pa) else 0 }))[fB]
   # s2B is per unit of alpha; with y = score / D the design is 1, so the prior centre A0 uses sum(sl^2) as before
   r <- w + 0; vg_old <- Inf; dh <- Inf; hy_old <- c(piB, log(s2B))
+  # options(SBayesEigen.blockve = "rho") (benchmark thread 2026-10-10, after SBayesRC's allMixVe): in a block with
+  # rho_b = beta'beta / beta'R beta > 1.1 (here (|alpha|^2 + |beta_A|^2 + |gamma|^2) / |fit_b|^2, Q2 orthonormal, cross
+  # terms ignored) the noise multiplier is s_b = (sum p0 r^2 + nu) / (k_b + nu), nu = 4, snapped to 1/1.1/1.25/1.5/2/3
+  # (residual only: no posterior-variance term). Off by default; for ablation.
+  brho <- identical(getOption("SBayesEigen.blockve", FALSE), "rho"); p0 <- p; sb <- rep(1, length(blk))
+  bid <- rep(seq_along(blk), rk + kB); dsb <- 0
   for (it in 1:maxit) {
     s <- abj_sweep_cpp(blk, off, p, r, mA, al, gC, gA, piA, s2A, gB, piB, s2B, tau, a, threads)
+    if (brho && it > 1) {
+      fw2 <- vapply(split((w - r)^2, bid), sum, 0)
+      bb2 <- vapply(seq_along(blk), function(b) sum(al[[b]]^2) + sum(mA[[b]]^2) + sum(gC[[b]]^2), 0)
+      sv <- (vapply(split(p0 * r^2, bid), sum, 0) + 4) / (rk + kB + 4)
+      gr <- c(1, 1.1, 1.25, 1.5, 2, 3); sn <- ifelse(bb2 > 1.1 * fw2 & fw2 > 0, gr[findInterval(sv, (gr[-1] + gr[-6]) / 2) + 1], sb)
+      dsb <- max(abs(log(sn / sb))); sb <- sn; p <- p0 / sb[bid]
+      DB <- unlist(lapply(seq_along(blk), function(b) { x <- blk[[b]]; pa <- p[off[b] + seq_len(rk[b])]
+        p[off[b] + rk[b] + seq_len(kB[b])] * x$sl^2 + if (rk[b]) colSums(x$Cm^2 * pa) else 0 }))[fB]
+    }
     if (nA > 0) { piA <- pmax(s$sphiA / nA, 1e-300); s2A <- max(s$saA / max(s$snzA, 1e-12), 1e-12) }
     # B: conditional score of each component given A, C and the other components, (y, D); SQUAREM-EM to convergence
     yd <- .abj_yD(blk, off, p, r)[fB] / DB + unlist(al)[fB]
     ct <- .abc_emB_ctl(it, dh); h <- .abc_emB(yd, rep(1, length(DB)), DB, gB, piB, s2B, bp, threads, ct$maxit, ct$tol); piB <- h$pi; s2B <- max(h$s2, 1e-12)
     vg <- sum((w - r)^2)   # whitened fit: (w - r)'(w - r) = beta' R beta
-    hy <- c(piB, log(s2B)); dh <- max(abs(hy - hy_old)); hy_old <- hy
+    hy <- c(piB, log(s2B)); dh <- max(abs(hy - hy_old), dsb); hy_old <- hy
     if (it > 3 && abs(vg - vg_old) < tol * vg && s$dz < stopz && dh < .abc_const$tolB) break
     vg_old <- vg
   }
-  list(alpha = al, mA = mA, gC = gC, Vg = vg, Vg_B = sum((sl * unlist(al))^2), piA = piA, s2A = s2A, piB = piB, s2B = s2B,
-       nB_fit = sum(fB), nA = nA, nC_cand = nCc, nC = sum(unlist(gC) != 0), iter = it, converged = it < maxit)
+  list(alpha = al, mA = mA, gC = gC, sb = if (brho) sb, Vg = vg, Vg_B = sum((sl * unlist(al))^2), piA = piA, s2A = s2A, piB = piB, s2B = s2B,
+       fitw = w - r, nB_fit = sum(fB), nA = nA, nC_cand = nCc, nC = sum(unlist(gC) != 0), iter = it, converged = it < maxit)
 }
