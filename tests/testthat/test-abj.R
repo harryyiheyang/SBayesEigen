@@ -125,7 +125,8 @@ test_that("sbayeseigen on ab.bin: joint ABC, beta = A effects + Q2 alpha + gamma
     expect_true(all(a[-seq_len(k)] == 0)); expect_true(any(a[seq_len(k)] != 0))
   }
   expect_gt(acc(fb9$snpRes$beta_std), 0.85)
-  af <- fit$par$abc_fit; expect_equal(af$Vg_A + af$Vg_B + af$Vg_C + sum(af$Vg_cross), fit$par$Vg, tolerance = 1e-8)
+  af <- fit$par$abc_fit; expect_equal(af$Vg_A + af$Vg_B + af$Vg_C, fit$par$Vg, tolerance = 1e-8)
+  expect_equal(sum(af$Vg_parts), fit$par$Vg, tolerance = 1e-8)
   ct <- fb9$par$abc[set == "C"]$frac_trunc; expect_true(all(ct >= 0 & ct <= 1))
   expect_true(all(fit$par$abc[set == "C"]$frac_trunc == 0)); expect_true(all(is.na(fit$par$abc[set == "A"]$frac_trunc)))
   # threshB = "auto": pseudo-validation over 0.995/0.99/0.95/0.9, reproducible, chosen value used

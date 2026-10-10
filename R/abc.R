@@ -192,8 +192,9 @@ abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_co
     if (it > 3 && abs(vg - vg_old) < tol * vg && s$dz < stopz && dh < .abc_const$tolB) break
     vg_old <- vg
   }
+  # Pratt split (Yihe 2026-10-10 06:31): V_k = f_k' f_all = beta_k' R beta, sums to Vg; own squares and crosses kept for debugging
   pt <- .abj_parts(blk, mA, al, gC)
-  list(alpha = al, mA = mA, gC = gC, sb = if (brho) sb, Vg = vg, Vg_B = pt[["B"]], Vg_A = pt[["A"]], Vg_C = pt[["C"]],
-       Vg_cross = pt[c("AB", "AC", "BC")], piA = piA, s2A = s2A, piB = piB, s2B = s2B,
+  list(alpha = al, mA = mA, gC = gC, sb = if (brho) sb, Vg = vg, Vg_A = pt[["A"]] + (pt[["AB"]] + pt[["AC"]]) / 2,
+       Vg_B = pt[["B"]] + (pt[["AB"]] + pt[["BC"]]) / 2, Vg_C = pt[["C"]] + (pt[["AC"]] + pt[["BC"]]) / 2, Vg_parts = pt, piA = piA, s2A = s2A, piB = piB, s2B = s2B,
        fitw = w - r, nB_fit = sum(fB), nA = nA, nC_cand = nCc, nC = sum(unlist(gC) != 0), iter = it, converged = it < maxit)
 }
