@@ -114,6 +114,17 @@ test_that("sbayeseigen on ab.bin: joint ABC, beta = A effects + Q2 alpha + gamma
   i <- match(f9$par$abc$SNP, si$ID); bs9[i] <- bs9[i] + f9$par$abc$beta_std
   expect_equal(f9$snpRes$beta_std, bs9, tolerance = 1e-5)
   expect_equal(suppressMessages(sbayeseigen(ma, fx$ld, threads = 2, thresh = 1))$snpRes$beta_std, fit$snpRes$beta_std, tolerance = 1e-6)
+  # threshB: B fitted on the leading components only, the rest alpha = 0 but kept in the data (A and C see them)
+  expect_equal(suppressMessages(sbayeseigen(ma, fx$ld, threads = 2, threshB = 1))$snpRes$beta_std, fit$snpRes$beta_std, tolerance = 1e-6)
+  fb9 <- suppressMessages(sbayeseigen(ma, fx$ld, threads = 2, threshB = 0.9)); cb <- fb9$par$comp[!is.na(alpha)]
+  expect_equal(nrow(cb), sum(!is.na(cp$alpha)))
+  expect_equal(fb9$par$abc_fit$nB_fit, f9$par$abc_fit$nB_fit)
+  for (b in unique(si$Block)) {
+    fb <- SBayesEigen:::.read_ab(file.path(fx$ld, paste0("block", b, ".ab.bin")))
+    k <- which(cumsum(fb$lambda) >= 0.9 * fb$sumLambda)[1]; a <- cb[Block == b]$alpha
+    expect_true(all(a[-seq_len(k)] == 0)); expect_true(any(a[seq_len(k)] != 0))
+  }
+  expect_gt(acc(fb9$snpRes$beta_std), 0.85)
 })
 
 test_that("ab.bin: a block whose SNPs are all in A (no B components) gives zero U alpha there, not recycled values", {

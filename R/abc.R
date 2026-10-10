@@ -108,11 +108,11 @@ abc_vi <- function(w, c, p, kb, X, role, tau = 5, a = 2.5, gA = .abc_const$gA, g
 # per iteration (abj_sweep_cpp); stops as abc_vi.
 # conditional B scores after a sweep: y_j = (rho_j + D_j alpha_j) / D_j with
 # rho_j = p_Bj s_j r_Bj + sum_q p_Aq Cm_qj r_Aq (the score the sweep's mixture update used)
-.abj_yD <- function(blk, off, p, r, al, DB) {
+.abj_yD <- function(blk, off, p, r) {   # B residual scores rho; conditional score y = rho / D + alpha
   unlist(lapply(seq_along(blk), function(b) { x <- blk[[b]]; rk <- nrow(x$XA); kB <- length(x$sl)
     ia <- off[b] + seq_len(rk); ib <- off[b] + rk + seq_len(kB)
     rho <- p[ib] * x$sl * r[ib] + if (rk) drop(crossprod(x$Cm, p[ia] * r[ia])) else 0
-    rho })) / DB + unlist(al)
+    rho }))
 }
 
 abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_const$gB,
@@ -124,18 +124,20 @@ abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_co
   sl <- unlist(lapply(blk, `[[`, "sl")); nA <- sum(vapply(blk, function(x) ncol(x$XA), 0L)); nCc <- sum(vapply(blk, function(x) ncol(x$XCb), 0L))
   mA <- lapply(blk, function(x) numeric(ncol(x$XA))); al <- lapply(kB, numeric); gC <- lapply(blk, function(x) numeric(ncol(x$XCb)))
   piA <- rep(1 / length(gA), length(gA)); piB <- rep(1 / length(gB), length(gB))
-  pB <- p[iB]; wB <- w[iB]
-  bp <- .abc_bprior(h2p, sum(sl^2)); if (!is.null(h2p)) gB <- bp$gB; piB <- rep(1 / length(gB), length(gB))
-  s2B <- .abc_s2B0(pB, wB, sl, h2p) / sum(piB * gB); s2A <- 1e-3 / max(nA, 1) / sum(piA * gA) * 10
+  # fitted B components: the first nB of each block (threshB); the rest keep alpha = 0 but stay in the data (A, C see them)
+  fB <- unlist(lapply(blk, function(x) seq_along(x$sl) <= (if (is.null(x$nB)) length(x$sl) else x$nB)))
+  pB <- p[iB][fB]; wB <- w[iB][fB]; slf <- sl[fB]
+  bp <- .abc_bprior(h2p, sum(slf^2)); if (!is.null(h2p)) gB <- bp$gB; piB <- rep(1 / length(gB), length(gB))
+  s2B <- .abc_s2B0(pB, wB, slf, h2p) / sum(piB * gB); s2A <- 1e-3 / max(nA, 1) / sum(piA * gA) * 10
   DB <- unlist(lapply(seq_along(blk), function(b) { x <- blk[[b]]; pa <- p[off[b] + seq_len(rk[b])]
-    p[off[b] + rk[b] + seq_len(kB[b])] * x$sl^2 + if (rk[b]) colSums(x$Cm^2 * pa) else 0 }))
+    p[off[b] + rk[b] + seq_len(kB[b])] * x$sl^2 + if (rk[b]) colSums(x$Cm^2 * pa) else 0 }))[fB]
   # s2B is per unit of alpha; with y = score / D the design is 1, so the prior centre A0 uses sum(sl^2) as before
   r <- w + 0; vg_old <- Inf; dh <- Inf; hy_old <- c(piB, log(s2B))
   for (it in 1:maxit) {
     s <- abj_sweep_cpp(blk, off, p, r, mA, al, gC, gA, piA, s2A, gB, piB, s2B, tau, a, threads)
     if (nA > 0) { piA <- pmax(s$sphiA / nA, 1e-300); s2A <- max(s$saA / max(s$snzA, 1e-12), 1e-12) }
     # B: conditional score of each component given A, C and the other components, (y, D); SQUAREM-EM to convergence
-    yd <- .abj_yD(blk, off, p, r, al, DB)
+    yd <- .abj_yD(blk, off, p, r)[fB] / DB + unlist(al)[fB]
     ct <- .abc_emB_ctl(it, dh); h <- .abc_emB(yd, rep(1, length(DB)), DB, gB, piB, s2B, bp, threads, ct$maxit, ct$tol); piB <- h$pi; s2B <- max(h$s2, 1e-12)
     vg <- sum((w - r)^2)   # whitened fit: (w - r)'(w - r) = beta' R beta
     hy <- c(piB, log(s2B)); dh <- max(abs(hy - hy_old)); hy_old <- hy
@@ -143,5 +145,5 @@ abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_co
     vg_old <- vg
   }
   list(alpha = al, mA = mA, gC = gC, Vg = vg, Vg_B = sum((sl * unlist(al))^2), piA = piA, s2A = s2A, piB = piB, s2B = s2B,
-       nA = nA, nC_cand = nCc, nC = sum(unlist(gC) != 0), iter = it, converged = it < maxit)
+       nB_fit = sum(fB), nA = nA, nC_cand = nCc, nC = sum(unlist(gC) != 0), iter = it, converged = it < maxit)
 }

@@ -261,6 +261,7 @@ struct AbResult {
   std::vector<double> lamA, lamB, XA, Cm, XCa, XCb;
   std::vector<int> idxA, crow;
   int rankA = 0, kB = 0, mA = 0;
+  double sumLambda = 0;
   std::string error;
 };
 
@@ -300,7 +301,7 @@ Rcpp::List ab_pass1_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcp
       if (!f.open(fs[b])) throw std::runtime_error("cannot read " + fs[b]);
       f.cut(thresh);
       const int m = f.m, mA = f.mA, mB = m - mA, kB = f.kB;
-      r.mA = mA; r.kB = kB;
+      r.mA = mA; r.kB = kB; r.sumLambda = f.sumLambda;
       std::vector<int> isA(m, -1), posB(m, -1);
       for (int a = 0; a < mA; ++a) { isA[f.idxA[a]] = a; r.idxA.push_back(f.idxA[a]); }
       for (int i = 0, q = 0; i < m; ++i) if (isA[i] < 0) posB[i] = q++;
@@ -412,7 +413,8 @@ Rcpp::List ab_pass1_cpp(Rcpp::CharacterVector files, Rcpp::List typed_index, Rcp
     for (int& v : cr) ++v;
     out[b] = Rcpp::List::create(Rcpp::_["z"] = zl, Rcpp::_["w"] = wl, Rcpp::_["lam"] = lam, Rcpp::_["rankA"] = rk,
                                 Rcpp::_["iA"] = ia, Rcpp::_["XA"] = XA, Rcpp::_["Cm"] = Cm,
-                                Rcpp::_["crow"] = cr, Rcpp::_["XCa"] = XCa, Rcpp::_["XCb"] = XCb);
+                                Rcpp::_["crow"] = cr, Rcpp::_["XCa"] = XCa, Rcpp::_["XCb"] = XCb,
+                                Rcpp::_["sumLambdaB"] = r.sumLambda);
   }
   return out;
 }

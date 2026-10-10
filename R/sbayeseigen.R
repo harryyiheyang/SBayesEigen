@@ -36,6 +36,10 @@
 #' @param thresh Proportion of eigenvalue mass kept per block. On ab.bin LD it truncates B at read time to the leading
 #'   components reaching \code{thresh} of the Schur complement's positive eigenvalue mass (A is not affected);
 #'   values at or above the build threshold keep every stored component.
+#' @param threshB ab.bin only: B (eigen-space) effects are fitted only on the leading components reaching
+#'   \code{threshB} of the Schur complement's positive eigenvalue mass; the remaining stored components keep
+#'   \eqn{\alpha = 0} but stay in the data, so A and C are fitted in the whole \code{thresh} space (Yihe
+#'   2026-10-10: e.g. \code{threshB = 0.95}, the rest left to C). \code{NULL} fits B on every component.
 #' @param tol VI stops when the posterior genetic variance changes by less than \code{tol}
 #'   (relative) in two consecutive iterations (\code{method = "eigen"}; ABC uses 5e-4 together with
 #'   a 0.05 z-unit change of the C effects).
@@ -68,13 +72,14 @@
 #' }
 #' @export
 sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", thresh = 0.995, tol = 1e-4,
-                        method = c("abc", "eigen"), annot = NULL, mcp = c(tau = 5, a = 2.5), beta_ref = FALSE) {
+                        method = c("abc", "eigen"), annot = NULL, mcp = c(tau = 5, a = 2.5), beta_ref = FALSE, threshB = NULL) {
   method <- match.arg(method)
+  if (!is.null(threshB) && !(is.numeric(threshB) && length(threshB) == 1 && threshB > 0 && threshB <= 1)) stop("threshB must be in (0, 1]")
   if (!is.null(names(mcp)) && all(c("tau", "a") %in% names(mcp))) mcp <- mcp[c("tau", "a")]
   if (length(mcp) != 2 || mcp[[1]] <= 0 || mcp[[2]] <= 1) stop("mcp must be c(tau = > 0, a = > 1)")
   # messages still go to the console; with out they are also written to <prefix>.log per trait
   msg <- character(0)
-  r <- withCallingHandlers(.sbayeseigen(ma, ld, out, threads, ve, kappa, thresh, tol, method, annot, mcp, beta_ref),
+  r <- withCallingHandlers(.sbayeseigen(ma, ld, out, threads, ve, kappa, thresh, tol, method, annot, mcp, beta_ref, threshB),
                            message = function(m) msg <<- c(msg, sub("\n$", "", conditionMessage(m))))
   for (p in attr(r, "prefix")) writeLines(c(format(Sys.time()), msg), paste0(p, ".log"))
   attr(r, "prefix") <- NULL
@@ -82,7 +87,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
 }
 
 .sbayeseigen <- function(ma, ld, out, threads, ve, kappa, thresh, tol, method = "eigen", annot = NULL, mcp = c(5, 2.5),
-                         beta_ref = FALSE) {
+                         beta_ref = FALSE, threshB = NULL) {
   if (!identical(kappa, "mom") && !(is.numeric(kappa) && length(kappa) == 1 && kappa >= 0))
     stop("kappa must be \"mom\" or a number >= 0")
   tm <- c(start = proc.time()[[3]])
@@ -147,7 +152,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     }
     vj <- vt + kp / lam * isB   # residual variance per component; VI sees n / vj with ve = 1 (A components: ve0)
     if (abld) {
-      ab <- .abj_setup(x, p1[use], rows[run][use], t)
+      ab <- .abj_setup(x, p1[use], rows[run][use], t, threshB)
       fit <- abj_vi(w, nc / vj, ab$blk, tau = mcp[[1]], a = mcp[[2]], threads = threads, h2p = h2p)
       if (!fit$converged) warning("ABC did not converge in ", fit$iter, " iterations")
       fit$Vg_sd <- NA_real_; fit$gamma <- .abc_bprior(h2p, 1)$gB; fit$pi <- fit$piB; fit$sigma2 <- fit$s2B
@@ -171,8 +176,9 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     message(sprintf("%sLDSC on %d typed SNPs: h2 = %.4f, intercept = %.3f; ve0 = %.3f, kappa = %.4f%s; VI: %d iterations, Vg = %.4f (sd %.4f)",
                     if (K > 1) paste0(tn[t], ": ") else "", length(x$ty), ldsc$h2, ldsc$intercept, vt, kp,
                     if (identical(kappa, "mom")) " (MoM)" else "", fit$iter, fit$Vg, fit$Vg_sd))
-    if (abld) message(sprintf("%sABC on ab.bin: %d A SNPs (stored annotation set), %d of %d C candidates selected (MCP tau = %g, a = %g); Vg_B = %.4f",
-                              if (K > 1) paste0(tn[t], ": ") else "", fit$nA, fit$nC, fit$nC_cand, mcp[[1]], mcp[[2]], fit$Vg_B))
+    if (abld) message(sprintf("%sABC on ab.bin: %d A SNPs (stored annotation set), %d of %d C candidates selected (MCP tau = %g, a = %g); B fitted on %d of %d components; Vg_B = %.4f",
+                              if (K > 1) paste0(tn[t], ": ") else "", fit$nA, fit$nC, fit$nC_cand, mcp[[1]], mcp[[2]],
+                              fit$nB_fit, sum(isB), fit$Vg_B))
     else if (abc) message(sprintf("%sABC: %d A SNPs (annotation, |z| > %g, r2 < %g leads), %d of %d C candidates selected (MCP tau = %g, a = %g); Vg_B = %.4f",
                              if (K > 1) paste0(tn[t], ": ") else "", fit$nA, .abc_const$zA, .abc_const$r2A, fit$nC, fit$nC_cand,
                              mcp[[1]], mcp[[2]], fit$Vg_B))
@@ -187,7 +193,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
                                        ve = vj, w = w, alpha = fit$alpha))
     if (abc) {
       par[[t]]$abc <- abc_tab
-      par[[t]]$abc_fit <- fit[c("Vg_B", "piA", "s2A", "nA", "nC_cand", "nC")]
+      par[[t]]$abc_fit <- fit[intersect(c("Vg_B", "piA", "s2A", "nA", "nC_cand", "nC", "nB_fit"), names(fit))]
       add[[t]] <- abc_tab[beta_std != 0]
     }
   }
@@ -341,14 +347,16 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
 }
 
 # one trait's ab.bin ABC design in the blocks it uses: the trait's C candidates among the union rows of pass 1
-.abj_setup <- function(x, p1b, rr, t) {
+.abj_setup <- function(x, p1b, rr, t, threshB = NULL) {
   bi <- match(names(rr), names(x$ti))
   out <- list(blk = list(), snpA = list(), snpC = list(), zA = list(), zC = list())
   for (j in seq_along(p1b)) {
     pb <- p1b[[j]]; ti <- x$ti[[bi[j]]] + 1L; zz <- x$z[[bi[j]]]
     q <- which(pb$crow %in% (x$cand[[bi[j]]] + 1L))
-    out$blk[[j]] <- list(XA = pb$XA, Cm = pb$Cm, sl = sqrt(pb$lam[pb$rankA + seq_len(ncol(pb$Cm))]),
-                         XCa = pb$XCa[, q, drop = FALSE], XCb = pb$XCb[, q, drop = FALSE])
+    lb <- pb$lam[pb$rankA + seq_len(ncol(pb$Cm))]
+    out$blk[[j]] <- list(XA = pb$XA, Cm = pb$Cm, sl = sqrt(lb), XCa = pb$XCa[, q, drop = FALSE], XCb = pb$XCb[, q, drop = FALSE])
+    # Yihe 2026-10-10: B fitted only up to threshB of the Schur complement's mass; A and C use the whole stored space
+    if (!is.null(threshB)) out$blk[[j]]$nB <- min(length(lb), which(cumsum(lb) >= threshB * pb$sumLambdaB)[1], na.rm = TRUE)
     out$snpA[[j]] <- rr[[j]][pb$iA]; out$zA[[j]] <- zz[match(pb$iA, ti)]
     out$snpC[[j]] <- rr[[j]][pb$crow[q]]; out$zC[[j]] <- zz[match(pb$crow[q], ti)]
   }

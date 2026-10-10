@@ -91,7 +91,7 @@ List abc_sweep_cpp(List X, IntegerVector off, NumericVector p, NumericVector r, 
 // e ~ N(0, 1/p) per component (p = n / (ve0 + kappa / lambda)). One call: one coordinate sweep of A (mr.ash),
 // B (mr.ash per component; design column (Cm[, j]; sqrt(lamB_j) e_j)) and C (MCP on the standardised scale)
 // on the residuals rA = r[off + 0..rk), rB = r[off + rk..rk+kB), updated in place. Blocks in parallel.
-// blk[[b]]: list(XA, Cm, sl, XCa, XCb); mA, al, gC: per block coefficients (updated in place).
+// blk[[b]]: list(XA, Cm, sl, XCa, XCb[, nB]) (nB: B components fitted, default all); mA, al, gC: per block coefficients (updated in place).
 // [[Rcpp::export]]
 List abj_sweep_cpp(List blk, IntegerVector off, NumericVector p, NumericVector r, List mA, List al, List gC,
                    NumericVector gammaA, NumericVector piA, double s2A, NumericVector gammaB, NumericVector piB,
@@ -99,8 +99,10 @@ List abj_sweep_cpp(List blk, IntegerVector off, NumericVector p, NumericVector r
   const int nb = blk.size(), KA = gammaA.size(), KB = gammaB.size();
   std::vector<NumericMatrix> XA(nb), Cm(nb), XCa(nb), XCb(nb);
   std::vector<NumericVector> sl(nb), ma(nb), aa(nb), gc(nb);
+  std::vector<int> nB(nb);
   for (int b = 0; b < nb; b++) {
     List bk = blk[b];
+    nB[b] = bk.containsElementNamed("nB") ? as<int>(bk["nB"]) : as<NumericVector>(bk["sl"]).size();
     XA[b] = as<NumericMatrix>(bk["XA"]); Cm[b] = as<NumericMatrix>(bk["Cm"]); XCa[b] = as<NumericMatrix>(bk["XCa"]);
     XCb[b] = as<NumericMatrix>(bk["XCb"]); sl[b] = as<NumericVector>(bk["sl"]);
     ma[b] = as<NumericVector>(mA[b]); aa[b] = as<NumericVector>(al[b]); gc[b] = as<NumericVector>(gC[b]);
@@ -141,7 +143,7 @@ List abj_sweep_cpp(List blk, IntegerVector off, NumericVector p, NumericVector r
         const double nw = mix(D, rho + D * ma[b][i], gammaA, lpA, s2A, shA, sAl, nAl), dm = nw - ma[b][i];
         if (dm != 0) { for (int j = 0; j < rk; j++) ra[j] -= x[j] * dm; ma[b][i] = nw; }
       }
-      for (int j = 0; j < kB; j++) {                        // B components
+      for (int j = 0; j < std::min(nB[b], kB); j++) {     // B components (the first nB; the rest stay alpha = 0 but in the data)
         const double* c = rk ? &Cm[b](0, j) : nullptr; const double s = sl[b][j];
         double D = pb[j] * s * s, rho = pb[j] * s * rb[j];
         for (int q = 0; q < rk; q++) { const double pc = pa[q] * c[q]; D += pc * c[q]; rho += pc * ra[q]; }

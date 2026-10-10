@@ -16,7 +16,8 @@ sbayeseigen(
   method = c("abc", "eigen"),
   annot = NULL,
   mcp = c(tau = 5, a = 2.5),
-  beta_ref = FALSE
+  beta_ref = FALSE,
+  threshB = NULL
 )
 }
 \arguments{
@@ -72,6 +73,11 @@ threshold is in units of the residual z noise sd, \eqn{\tau\sqrt{ve_0}} under co
 
 \item{beta_ref}{\code{TRUE}: output beta = beta_std \eqn{\sqrt{V_y / 2p(1-p)}} with p the LD reference
 A1 frequency for COJO input as well (always so for the simplified format).}
+
+\item{threshB}{ab.bin only: B (eigen-space) effects are fitted only on the leading components reaching
+\code{threshB} of the Schur complement's positive eigenvalue mass; the remaining stored components keep
+\eqn{\alpha = 0} but stay in the data, so A and C are fitted in the whole \code{thresh} space (Yihe
+2026-10-10: e.g. \code{threshB = 0.95}, the rest left to C). \code{NULL} fits B on every component.}
 }
 \value{
 Invisibly. One trait: a list with \code{snpRes} (SNP, A1, A2, Block, beta, beta_std,
