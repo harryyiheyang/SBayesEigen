@@ -1,7 +1,7 @@
 # ABC (Yihe 2026-10-07): beta = beta_A + U alpha + gamma on one eigen.bin, fitted jointly.
 #   A: annotation SNPs with |z| > zA, thinned to greedy r2 < r2A leads (largest |z| first); mr.ash in beta space,
 #      grid exact 0 / 1 / 10.
-#   B: eigen-space mixture alpha (exact 0 / 1 / 100 / 500), one EM map per iteration, no prior on its variance.
+#   B: eigen-space mixture alpha (exact 0 / 1 / 100 / 500), SQUAREM-EM of its hyperparameters (full in iterations 1-3, then <= 3 steps), no prior on its variance.
 #   C: SNPs with |z| > zC not in A, MCP(tau, a) on the standardised scale (threshold tau in residual z noise sd,
 #      i.e. tau sqrt(ve0) under constant noise; kappa enters through the per-component precision).
 # One iteration: A sweep, B EM map, C sweep, all on the shared component-space residual (no outer loop).
@@ -14,6 +14,9 @@
 # B hyperparameters (pi_B, s2B) by SQUAREM-EM to convergence on the independent-normal-means problem
 # y_j = c_j alpha_j + e_j, e_j ~ N(0, 1 / p_j), with the current residual (other parts fixed), as vi_eigen does.
 # One plain EM map per outer iteration crawls (2026-10-09 real 7M fits); this is the B update of each iteration.
+# Run to convergence only in the first iterations; after that, warm-started, at most 3 SQUAREM steps with tolerance
+# 0.1 x the last outer change (0ea0e9a ran to 1e-6 every iteration: 18-trait HPC fit > 4.5x slower, 2026-10-10).
+.abc_emB_ctl <- function(it, dh) if (it <= 3) list(maxit = 200, tol = 1e-6) else list(maxit = 3, tol = max(1e-6, 0.1 * dh))
 .abc_emB <- function(y, c, p, gB, piB, s2B, bp, threads, maxit = 200, tol = 1e-6) {
   K <- length(gB)
   em <- function(th) {
@@ -27,8 +30,8 @@
     live <- c(e$th[1:K] > log(1e-8), TRUE)
     a <- min(-sqrt(sum(rr[live]^2) / max(sum(v[live]^2), 1e-300)), -1)
     tp <- th - 2 * a * rr + a^2 * v; tp[1:K] <- pmax(tp[1:K], -700); tp[K + 1] <- min(max(tp[K + 1], -50), 50)
-    en <- em(em(tp)$th); e2 <- em(e1$th)
-    if (!is.finite(en$obj) || en$obj < e2$obj) en <- e2
+    en <- em(em(tp)$th)
+    if (!is.finite(en$obj) || en$obj < e1$obj) en <- em(e1$th)
     dth <- max(abs(en$th - th)); th <- en$th; e <- en
     if (dth < tol) break
   }
@@ -77,7 +80,7 @@ abc_vi <- function(w, c, p, kb, X, role, tau = 5, a = 2.5, gA = .abc_const$gA, g
   nA <- sum(unlist(role) == 1L); nC <- sum(unlist(role) == 2L)
   piA <- rep(1 / length(gA), length(gA)); piB <- rep(1 / length(gB), length(gB))
   s2B <- .abc_s2B0(p, w, c, h2p) / sum(piB * gB); s2A <- 1e-3 / max(nA, 1) / sum(piA * gA) * 10
-  Ea <- numeric(length(w)); r <- w + 0; vg_old <- Inf; dz <- 0; hy_old <- c(piB, log(s2B))
+  Ea <- numeric(length(w)); r <- w + 0; vg_old <- Inf; dz <- 0; dh <- Inf; hy_old <- c(piB, log(s2B))
   for (it in 1:maxit) {
     if (nA > 0) {
       sw <- abc_sweep_cpp(X, off, p, r, role, coef, gA, piA, s2A, tau, a, TRUE, FALSE, threads)
@@ -86,7 +89,7 @@ abc_vi <- function(w, c, p, kb, X, role, tau = 5, a = 2.5, gA = .abc_const$gA, g
     rB <- r + c * Ea
     if (nem > 0) for (q in seq_len(nem)) { e <- em_step_cpp(rB, c, p, gB, piB, s2B, 1, bp$s2p, bp$nu, bp$A0, threads)
       piB <- e$pi; s2B <- e$sigma2 }
-    else { h <- .abc_emB(rB, c, p, gB, piB, s2B, bp, threads); piB <- h$pi; s2B <- h$s2 }
+    else { ct <- .abc_emB_ctl(it, dh); h <- .abc_emB(rB, c, p, gB, piB, s2B, bp, threads, ct$maxit, ct$tol); piB <- h$pi; s2B <- h$s2 }
     Ea <- post_cpp(rB, c, p, gB, piB, s2B, 1, threads)$alpha
     r <- rB - c * Ea
     if (nC > 0) dz <- abc_sweep_cpp(X, off, p, r, role, coef, gA, piA, s2A, tau, a, FALSE, TRUE, threads)$dz
@@ -127,13 +130,13 @@ abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_co
   DB <- unlist(lapply(seq_along(blk), function(b) { x <- blk[[b]]; pa <- p[off[b] + seq_len(rk[b])]
     p[off[b] + rk[b] + seq_len(kB[b])] * x$sl^2 + if (rk[b]) colSums(x$Cm^2 * pa) else 0 }))
   # s2B is per unit of alpha; with y = score / D the design is 1, so the prior centre A0 uses sum(sl^2) as before
-  r <- w + 0; vg_old <- Inf; hy_old <- c(piB, log(s2B))
+  r <- w + 0; vg_old <- Inf; dh <- Inf; hy_old <- c(piB, log(s2B))
   for (it in 1:maxit) {
     s <- abj_sweep_cpp(blk, off, p, r, mA, al, gC, gA, piA, s2A, gB, piB, s2B, tau, a, threads)
     if (nA > 0) { piA <- pmax(s$sphiA / nA, 1e-300); s2A <- max(s$saA / max(s$snzA, 1e-12), 1e-12) }
     # B: conditional score of each component given A, C and the other components, (y, D); SQUAREM-EM to convergence
     yd <- .abj_yD(blk, off, p, r, al, DB)
-    h <- .abc_emB(yd, rep(1, length(DB)), DB, gB, piB, s2B, bp, threads); piB <- h$pi; s2B <- max(h$s2, 1e-12)
+    ct <- .abc_emB_ctl(it, dh); h <- .abc_emB(yd, rep(1, length(DB)), DB, gB, piB, s2B, bp, threads, ct$maxit, ct$tol); piB <- h$pi; s2B <- max(h$s2, 1e-12)
     vg <- sum((w - r)^2)   # whitened fit: (w - r)'(w - r) = beta' R beta
     hy <- c(piB, log(s2B)); dh <- max(abs(hy - hy_old)); hy_old <- hy
     if (it > 3 && abs(vg - vg_old) < tol * vg && s$dz < stopz && dh < .abc_const$tolB) break
