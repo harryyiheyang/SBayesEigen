@@ -213,14 +213,11 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
     message(sprintf("%sLDSC on %d typed SNPs: h2 = %.4f, intercept = %.3f; ve0 = %.3f, kappa = %.4f%s; VI: %d iterations, Vg = %.4f (sd %.4f)",
                     if (K > 1) paste0(tn[t], ": ") else "", length(x$ty), ldsc$h2, ldsc$intercept, vt, kp,
                     if (identical(kappa, "mom")) " (MoM)" else "", fit$iter, fit$Vg, fit$Vg_sd))
-    # weak-signal / noise-scale checks (benchmark 2026-10-10: MVP FPG, N 5,271, mean chi2 1.018, gave Vg 0.52 vs LDSC 0.11)
-    tl <- if (K > 1) paste0(tn[t], ": ") else ""; mchi <- mean(x$n_ty * x$bh_ty^2)
-    if (mchi < 1.05) warning(sprintf("%sweak signal: mean chi2 = %.3f on typed SNPs (N %.0f); the fit may follow noise", tl, mchi, stats::median(x$n_ty)), call. = FALSE)
-    if (fit$Vg > 3 * h2p) warning(sprintf("%sVg = %.3f is more than 3 x the LDSC h2 (%.3f); check N and the LD reference", tl, fit$Vg, h2p), call. = FALSE)
+    tl <- if (K > 1) paste0(tn[t], ": ") else ""
     if (identical(kappa, "mom") && vt < 1) message(sprintf("%snote: MoM ve0 = %.3f < 1 (N overstated or sample overlap?)", tl, vt))
-    if (abld) message(sprintf("%sABC on ab.bin: %d A SNPs (stored annotation set), %d of %d C candidates selected (MCP tau = %g, a = %g); B fitted on %d of %d components; Vg_B = %.4f",
+    if (abld) message(sprintf("%sABC on ab.bin: %d A SNPs (stored annotation set), %d of %d C candidates selected (MCP tau = %g, a = %g); B fitted on %d of %d components; Vg_A = %.4f, Vg_B = %.4f, Vg_C = %.4f, cross = %.4f",
                               if (K > 1) paste0(tn[t], ": ") else "", fit$nA, fit$nC, fit$nC_cand, mcp[[1]], mcp[[2]],
-                              fit$nB_fit, sum(isB), fit$Vg_B))
+                              fit$nB_fit, sum(isB), fit$Vg_A, fit$Vg_B, fit$Vg_C, sum(fit$Vg_cross)))
     else if (abc) message(sprintf("%sABC: %d A SNPs (annotation, |z| > %g, r2 < %g leads), %d of %d C candidates selected (MCP tau = %g, a = %g); Vg_B = %.4f",
                              if (K > 1) paste0(tn[t], ": ") else "", fit$nA, .abc_const$zA, .abc_const$r2A, fit$nC, fit$nC_cand,
                              mcp[[1]], mcp[[2]], fit$Vg_B))
@@ -236,7 +233,7 @@ sbayeseigen <- function(ma, ld, out = NULL, threads = 4, ve = 1, kappa = "mom", 
                                        ve = vj, w = w, alpha = fit$alpha))
     if (abc) {
       par[[t]]$abc <- abc_tab
-      par[[t]]$abc_fit <- fit[intersect(c("Vg_B", "piA", "s2A", "nA", "nC_cand", "nC", "nB_fit", "threshB", "pv"), names(fit))]
+      par[[t]]$abc_fit <- fit[intersect(c("Vg_A", "Vg_B", "Vg_C", "Vg_cross", "piA", "s2A", "nA", "nC_cand", "nC", "nB_fit", "threshB", "pv"), names(fit))]
       add[[t]] <- abc_tab[beta_std != 0]
     }
   }

@@ -135,6 +135,18 @@ abc_vi <- function(w, c, p, kb, X, role, tau = 5, a = 2.5, gA = .abc_const$gA, g
     rho }))
 }
 
+# whitened fit of each part per block (A rows | B rows): A = (XA m_A | 0), B = (Cm alpha | sl alpha),
+# C = (XCa gamma | XCb gamma); Vg = |fA + fB + fC|^2 = Vg_A + Vg_B + Vg_C + 2 (fA'fB + fA'fC + fB'fC) (crosses reported x2)
+.abj_parts <- function(blk, mA, al, gC) {
+  o <- vapply(seq_along(blk), function(b) { x <- blk[[b]]; rk <- nrow(x$XA)
+    fA <- c(if (rk) drop(x$XA %*% mA[[b]]) else numeric(0), numeric(length(x$sl)))
+    fB <- c(if (rk) drop(x$Cm %*% al[[b]]) else numeric(0), x$sl * al[[b]])
+    fC <- if (ncol(x$XCb)) c(if (rk) drop(x$XCa %*% gC[[b]]) else numeric(0), drop(x$XCb %*% gC[[b]])) else 0 * fB
+    c(A = sum(fA^2), B = sum(fB^2), C = sum(fC^2), AB = 2 * sum(fA * fB), AC = 2 * sum(fA * fC), BC = 2 * sum(fB * fC)) },
+    numeric(6))
+  rowSums(o)
+}
+
 abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_const$gB,
                    tol = 5e-4, stopz = 0.05, maxit = 1000, threads = 4, h2p = NULL) {
   if (!all(is.finite(w)) || !all(is.finite(p) & p > 0)) stop("abj_vi: non-finite w or non-positive precision p")
@@ -180,6 +192,8 @@ abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_co
     if (it > 3 && abs(vg - vg_old) < tol * vg && s$dz < stopz && dh < .abc_const$tolB) break
     vg_old <- vg
   }
-  list(alpha = al, mA = mA, gC = gC, sb = if (brho) sb, Vg = vg, Vg_B = sum((sl * unlist(al))^2), piA = piA, s2A = s2A, piB = piB, s2B = s2B,
+  pt <- .abj_parts(blk, mA, al, gC)
+  list(alpha = al, mA = mA, gC = gC, sb = if (brho) sb, Vg = vg, Vg_B = pt[["B"]], Vg_A = pt[["A"]], Vg_C = pt[["C"]],
+       Vg_cross = pt[c("AB", "AC", "BC")], piA = piA, s2A = s2A, piB = piB, s2B = s2B,
        fitw = w - r, nB_fit = sum(fB), nA = nA, nC_cand = nCc, nC = sum(unlist(gC) != 0), iter = it, converged = it < maxit)
 }
