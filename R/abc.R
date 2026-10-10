@@ -49,9 +49,27 @@
 .abc_bprior <- function(h2p, sc2) {
   if (identical(getOption("SBayesEigen.bprior", "eigen"), "flat") || is.null(h2p))
     return(list(gB = .abc_const$gB, s2p = 0, nu = -2, A0 = 1))
-  gB <- c(0, 1e-4, 1e-3, 1e-2, 1e-1, 1)
-  list(gB = gB, s2p = 2 * h2p, nu = 4, A0 = mean(gB) * sc2)
+  gB <- c(0, 1e-4, 1e-3, 1e-2, 1e-1, 1); nu <- .abc_nu("B")
+  list(gB = gB, s2p = (nu - 2) * h2p, nu = nu, A0 = mean(gB) * sc2)
 }
+# Priors on the A and B variance scales (Yihe 2026-10-10 06:20: both centred at h2, A concentrated, B wide).
+# For a part with grid g and scale s2, tau = s2 * mean(g) * S (S = sum(lambda_B) for B, the number of A SNPs for A,
+# i.e. tau ~ Vg of that part with equal class weights; A in beta space with standardised SNPs and thinned leads,
+# so beta_A' R_AA beta_A ~ sum beta_A^2) has a scaled-inv-chi2(nu, s^2) prior with mean nu s^2 / (nu - 2) = LDSC h2.
+# M-step: s2 = (sum_k phi (mu^2 + v) / g_k + (nu - 2) h2 / A0) / (sum phi_nonzero + nu + 2), A0 = mean(g) * S.
+# Both parts are centred at h2, so the prior expectation of the total Vg is about 2 h2 (the data decide the split).
+# nu: options(SBayesEigen.nuA = 50, SBayesEigen.nuB = 4) (> 2); nuA = 0 turns the A prior off (old plain M-step).
+.abc_nu <- function(part) {
+  nu <- getOption(paste0("SBayesEigen.nu", part), if (part == "A") 50 else 4)
+  if (!(part == "A" && nu == 0) && !(is.numeric(nu) && nu > 2)) stop("SBayesEigen.nu", part, " must be > 2", if (part == "A") " (or 0)")
+  nu
+}
+.abc_aprior <- function(h2p, nA, gA) {
+  nu <- .abc_nu("A")
+  if (is.null(h2p) || nu == 0 || nA == 0) return(list(s2p = 0, nu = -2, A0 = 1, s2_0 = NULL))
+  A0 <- mean(gA) * nA; list(s2p = (nu - 2) * h2p, nu = nu, A0 = A0, s2_0 = h2p / A0)
+}
+.abc_mA <- function(sa, snz, ap) max((sa + ap$s2p / ap$A0) / max(snz + ap$nu + 2, 1e-12), 1e-12)
 
 # candidate rows (zero-based, per block) of one trait: typed (not imputed) SNPs with |z| above the lower of zA and zC
 .abc_rows <- function(x) Map(function(ti, z, ty) ti[ty & abs(z) > min(.abc_const$zA, .abc_const$zC)], x$ti, x$z, x$typ)
@@ -81,11 +99,12 @@ abc_vi <- function(w, c, p, kb, X, role, tau = 5, a = 2.5, gA = .abc_const$gA, g
   nA <- sum(unlist(role) == 1L); nC <- sum(unlist(role) == 2L)
   piA <- rep(1 / length(gA), length(gA)); piB <- rep(1 / length(gB), length(gB))
   s2B <- .abc_s2B0(p, w, c, h2p) / sum(piB * gB); s2A <- 1e-3 / max(nA, 1) / sum(piA * gA) * 10
+  ap <- .abc_aprior(h2p, nA, gA); if (!is.null(ap$s2_0)) s2A <- ap$s2_0
   Ea <- numeric(length(w)); r <- w + 0; vg_old <- Inf; dz <- 0; dh <- Inf; hy_old <- c(piB, log(s2B))
   for (it in 1:maxit) {
     if (nA > 0) {
       sw <- abc_sweep_cpp(X, off, p, r, role, coef, gA, piA, s2A, tau, a, TRUE, FALSE, threads)
-      piA <- pmax(sw$sphi / nA, 1e-300); s2A <- max(sw$sa / max(sw$snz, 1e-12), 1e-12)
+      piA <- pmax(sw$sphi / nA, 1e-300); s2A <- .abc_mA(sw$sa, sw$snz, ap)
     }
     rB <- r + c * Ea
     if (nem > 0) for (q in seq_len(nem)) { e <- em_step_cpp(rB, c, p, gB, piB, s2B, 1, bp$s2p, bp$nu, bp$A0, threads)
@@ -130,6 +149,7 @@ abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_co
   pB <- p[iB][fB]; wB <- w[iB][fB]; slf <- sl[fB]
   bp <- .abc_bprior(h2p, sum(slf^2)); if (!is.null(h2p)) gB <- bp$gB; piB <- rep(1 / length(gB), length(gB))
   s2B <- .abc_s2B0(pB, wB, slf, h2p) / sum(piB * gB); s2A <- 1e-3 / max(nA, 1) / sum(piA * gA) * 10
+  ap <- .abc_aprior(h2p, nA, gA); if (!is.null(ap$s2_0)) s2A <- ap$s2_0
   DB <- unlist(lapply(seq_along(blk), function(b) { x <- blk[[b]]; pa <- p[off[b] + seq_len(rk[b])]
     p[off[b] + rk[b] + seq_len(kB[b])] * x$sl^2 + if (rk[b]) colSums(x$Cm^2 * pa) else 0 }))[fB]
   # s2B is per unit of alpha; with y = score / D the design is 1, so the prior centre A0 uses sum(sl^2) as before
@@ -151,7 +171,7 @@ abj_vi <- function(w, p, blk, tau = 5, a = 2.5, gA = .abc_const$gA, gB = .abc_co
       DB <- unlist(lapply(seq_along(blk), function(b) { x <- blk[[b]]; pa <- p[off[b] + seq_len(rk[b])]
         p[off[b] + rk[b] + seq_len(kB[b])] * x$sl^2 + if (rk[b]) colSums(x$Cm^2 * pa) else 0 }))[fB]
     }
-    if (nA > 0) { piA <- pmax(s$sphiA / nA, 1e-300); s2A <- max(s$saA / max(s$snzA, 1e-12), 1e-12) }
+    if (nA > 0) { piA <- pmax(s$sphiA / nA, 1e-300); s2A <- .abc_mA(s$saA, s$snzA, ap) }
     # B: conditional score of each component given A, C and the other components, (y, D); SQUAREM-EM to convergence
     yd <- .abj_yD(blk, off, p, r)[fB] / DB + unlist(al)[fB]
     ct <- .abc_emB_ctl(it, dh); h <- .abc_emB(yd, rep(1, length(DB)), DB, gB, piB, s2B, bp, threads, ct$maxit, ct$tol); piB <- h$pi; s2B <- max(h$s2, 1e-12)
